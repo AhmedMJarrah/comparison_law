@@ -142,6 +142,17 @@ logging.basicConfig(level=logging.WARNING)
 # Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Cloud-safe output dirs — use /tmp so Streamlit Cloud can write
+import os
+os.environ.setdefault("OUTPUT_DIR",    "/tmp/output")
+os.environ.setdefault("REPORTS_DIR",   "/tmp/output/reports")
+os.environ.setdefault("SUMMARIES_DIR", "/tmp/output/summaries")
+os.environ.setdefault("LOGS_DIR",      "/tmp/logs")
+os.environ.setdefault("LOG_TO_FILE",   "false")
+os.environ.setdefault("LOG_LEVEL",     "WARNING")
+Path("/tmp/output/reports").mkdir(parents=True, exist_ok=True)
+Path("/tmp/output/summaries").mkdir(parents=True, exist_ok=True)
+
 from src.ingestion  import load_pair, list_laws_in_json
 from src.extractor  import extract
 from src.comparator import compare, MatchStatus, STATUS_EMOJI, STATUS_LABEL
