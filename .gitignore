@@ -1,0 +1,76 @@
+# ──────────────────────────────────────────────
+# comparison_law — .gitignore
+# ──────────────────────────────────────────────
+
+
+# ── Environment ────────────────────────────────
+.env
+*.env
+!.env.example                           # Keep the template
+
+
+# ── Virtual Environment ────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+
+# ── Python ─────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+
+# ── Outputs (generated files) ──────────────────
+output/reports/*
+output/summaries/*
+logs/*
+!output/reports/.gitkeep
+!output/summaries/.gitkeep
+!logs/.gitkeep
+
+
+# ── Data (sensitive) ───────────────────────────
+# Uncomment below if law files are confidential
+# data/source1/*
+# data/source2/*
+# !data/source1/.gitkeep
+# !data/source2/.gitkeep
+
+
+# ── IDE & OS ───────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# ── Testing & Coverage ─────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+
+# ── Jupyter (if used) ──────────────────────────
+.ipynb_checkpoints/
+*.ipynb
