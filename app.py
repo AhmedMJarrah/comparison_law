@@ -2,15 +2,9 @@
 app.py
 ------
 Streamlit web interface for the Law Comparison Pipeline.
-
-Features:
-  - File upload for JSON + TXT sources
-  - Law selection from multi-law JSON
-  - Full pipeline execution with progress
-  - Side-by-side article comparison view
-  - Filter by match status
-  - Search by article number
-  - Download HTML + Excel reports
+Supports batch mode: one JSON + multiple TXT files.
+Auto-pairs each TXT to its matching law in the JSON by
+extracting law number + year from the Arabic filename.
 
 Run:
     streamlit run app.py
@@ -18,11 +12,12 @@ Run:
 
 import streamlit as st
 import json
+import re
 import tempfile
 import time
+import os
 from pathlib import Path
 
-# ── Page config (must be first) ────────────────────────────────
 st.set_page_config(
     page_title    = "Law Comparison Pipeline",
     page_icon     = "⚖️",
@@ -30,48 +25,46 @@ st.set_page_config(
     initial_sidebar_state = "expanded",
 )
 
-# ── Custom CSS ─────────────────────────────────────────────────
 st.markdown("""
 <style>
-  /* ── Global ── */
   @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap');
+  html, body, [class*="css"] { font-family: 'Tajawal', 'Segoe UI', Tahoma, sans-serif; }
 
-  html, body, [class*="css"] {
-    font-family: 'Tajawal', 'Segoe UI', Tahoma, sans-serif;
-  }
-
-  /* ── Header ── */
   .main-header {
     background: linear-gradient(135deg, #1a1a2e 0%, #0f3460 100%);
-    padding: 1.5rem 2rem;
-    border-radius: 12px;
-    margin-bottom: 1.5rem;
-    color: white;
+    padding: 1.5rem 2rem; border-radius: 12px;
+    margin-bottom: 1.5rem; color: white;
   }
   .main-header h1 { color: white; margin: 0; font-size: 1.8rem; }
   .main-header p  { color: #aaaacc; margin: 0.3rem 0 0; font-size: 0.9rem; }
 
-  /* ── KPI Cards ── */
   .kpi-row { display: flex; gap: 12px; margin: 1rem 0; flex-wrap: wrap; }
   .kpi-card {
-    flex: 1; min-width: 120px;
-    background: white;
-    border-radius: 10px;
-    padding: 14px 16px;
-    text-align: center;
-    border-top: 4px solid #ddd;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    flex: 1; min-width: 110px; background: white;
+    border-radius: 10px; padding: 14px 16px; text-align: center;
+    border-top: 4px solid #ddd; box-shadow: 0 2px 8px rgba(0,0,0,0.06);
   }
-  .kpi-card .num { font-size: 1.8rem; font-weight: 800; line-height: 1; }
-  .kpi-card .lbl { font-size: 0.75rem; color: #666; margin-top: 4px; }
-  .kpi-match   { border-color: #28a745; }  .kpi-match .num   { color: #28a745; }
-  .kpi-near    { border-color: #ffc107; }  .kpi-near .num    { color: #e6a800; }
-  .kpi-mis     { border-color: #dc3545; }  .kpi-mis .num     { color: #dc3545; }
-  .kpi-miss    { border-color: #6c757d; }  .kpi-miss .num    { color: #6c757d; }
-  .kpi-extra   { border-color: #17a2b8; }  .kpi-extra .num   { color: #17a2b8; }
-  .kpi-cov     { border-color: #0f3460; }  .kpi-cov .num     { color: #0f3460; }
+  .kpi-card .num { font-size: 1.7rem; font-weight: 800; line-height: 1; }
+  .kpi-card .lbl { font-size: 0.72rem; color: #666; margin-top: 4px; }
+  .kpi-match  { border-color:#28a745; } .kpi-match .num  { color:#28a745; }
+  .kpi-near   { border-color:#ffc107; } .kpi-near .num   { color:#e6a800; }
+  .kpi-mis    { border-color:#dc3545; } .kpi-mis .num    { color:#dc3545; }
+  .kpi-miss   { border-color:#6c757d; } .kpi-miss .num   { color:#6c757d; }
+  .kpi-extra  { border-color:#17a2b8; } .kpi-extra .num  { color:#17a2b8; }
+  .kpi-cov    { border-color:#0f3460; } .kpi-cov .num    { color:#0f3460; }
 
-  /* ── Status badges ── */
+  .law-row {
+    background: white; border-radius: 10px; padding: 14px 18px;
+    margin-bottom: 10px; border-right: 5px solid #ddd;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.05); cursor: pointer;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .law-row:hover { box-shadow: 0 3px 12px rgba(0,0,0,0.1); }
+  .law-row.border-green  { border-color: #28a745; }
+  .law-row.border-yellow { border-color: #ffc107; }
+  .law-row.border-red    { border-color: #dc3545; }
+  .law-row.border-gray   { border-color: #adb5bd; }
+
   .badge {
     display: inline-block; padding: 2px 10px;
     border-radius: 10px; font-size: 0.75rem; font-weight: 600;
@@ -82,68 +75,44 @@ st.markdown("""
   .badge-MISSING    { background:#e2e3e5; color:#383d41; }
   .badge-EXTRA      { background:#d1ecf1; color:#0c5460; }
 
-  /* ── Article cards ── */
   .art-card {
-    border: 1px solid #e9ecef;
-    border-radius: 8px;
-    padding: 12px 14px;
-    margin-bottom: 8px;
-    background: white;
-    font-size: 0.85rem;
-    line-height: 1.7;
-    direction: rtl;
-    text-align: right;
+    border: 1px solid #e9ecef; border-radius: 8px; padding: 12px 14px;
+    margin-bottom: 8px; background: white; font-size: 0.85rem;
+    line-height: 1.7; direction: rtl; text-align: right;
   }
   .art-card-header {
-    display: flex; justify-content: space-between;
-    align-items: center; margin-bottom: 8px;
-    border-bottom: 1px solid #f0f0f0; padding-bottom: 6px;
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px; border-bottom: 1px solid #f0f0f0; padding-bottom: 6px;
   }
-  .art-num { font-weight: 700; color: #0f3460; font-size: 1rem; }
+  .art-num  { font-weight: 700; color: #0f3460; font-size: 1rem; }
   .art-text { color: #333; white-space: pre-wrap; word-break: break-word; }
-  .art-missing { background: #f8f9fa; color: #aaa; font-style: italic; }
-
   .score-bar-wrap { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
   .score-bar { flex:1; height:5px; border-radius:3px; background:#e9ecef; overflow:hidden; }
   .score-fill { height:100%; border-radius:3px; }
 
-  /* ── Divider ── */
-  .col-divider {
-    border-right: 2px solid #e9ecef;
-    min-height: 100px;
-  }
-
-  /* ── Sidebar ── */
-  .sidebar-section {
-    background: #f8f9fa;
-    border-radius: 8px;
-    padding: 12px;
-    margin-bottom: 12px;
-  }
-
-  /* ── Verdict ── */
   .verdict-badge {
     display: inline-block; padding: 6px 20px;
-    border-radius: 20px; font-weight: 700; font-size: 1rem;
+    border-radius: 20px; font-weight: 700; font-size: 0.95rem;
   }
-  .v-ممتاز      { background:#d4edda; color:#155724; }
-  .v-جيد        { background:#cce5ff; color:#004085; }
-  .v-مقبول      { background:#fff3cd; color:#856404; }
+  .v-ممتاز  { background:#d4edda; color:#155724; }
+  .v-جيد    { background:#cce5ff; color:#004085; }
+  .v-مقبول  { background:#fff3cd; color:#856404; }
+  .v-يحتاج-مراجعة { background:#f8d7da; color:#721c24; }
+
+  .pair-chip {
+    display: inline-block; padding: 3px 10px; border-radius: 8px;
+    font-size: 0.75rem; font-weight: 500; margin: 2px;
+  }
+  .chip-ok     { background:#d4edda; color:#155724; }
+  .chip-warn   { background:#fff3cd; color:#856404; }
+  .chip-err    { background:#f8d7da; color:#721c24; }
+  .chip-skip   { background:#e2e3e5; color:#383d41; }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ── Imports (after page config) ────────────────────────────────
+# ── Cloud-safe paths ────────────────────────────────────────────
 import sys
-import os
-import logging
-logging.basicConfig(level=logging.WARNING)
-
-# Ensure src/ is importable
 sys.path.insert(0, str(Path(__file__).parent))
-
-# Cloud-safe output dirs — use /tmp so Streamlit Cloud can write
-import os
 os.environ.setdefault("OUTPUT_DIR",    "/tmp/output")
 os.environ.setdefault("REPORTS_DIR",   "/tmp/output/reports")
 os.environ.setdefault("SUMMARIES_DIR", "/tmp/output/summaries")
@@ -153,22 +122,17 @@ os.environ.setdefault("LOG_LEVEL",     "WARNING")
 Path("/tmp/output/reports").mkdir(parents=True, exist_ok=True)
 Path("/tmp/output/summaries").mkdir(parents=True, exist_ok=True)
 
-from src.ingestion  import load_pair, list_laws_in_json
+import logging
+logging.basicConfig(level=logging.WARNING)
+
+from src.ingestion  import load_pair
 from src.extractor  import extract
 from src.comparator import compare, MatchStatus, STATUS_EMOJI, STATUS_LABEL
 from src.reporter   import generate_report
 from src.normalizer import convert_numerals
 
 
-# ── Helpers ────────────────────────────────────────────────────
-
-STATUS_COLORS = {
-    MatchStatus.MATCH:      "#28a745",
-    MatchStatus.NEAR_MATCH: "#ffc107",
-    MatchStatus.MISMATCH:   "#dc3545",
-    MatchStatus.MISSING:    "#adb5bd",
-    MatchStatus.EXTRA:      "#17a2b8",
-}
+# ── Helpers ─────────────────────────────────────────────────────
 
 STATUS_AR = {
     MatchStatus.MATCH:      "✅ تطابق",
@@ -178,8 +142,7 @@ STATUS_AR = {
     MatchStatus.EXTRA:      "➕ زائد",
 }
 
-def read_file(uploaded) -> str:
-    """Read uploaded file with encoding fallback."""
+def read_bytes(uploaded) -> str:
     raw = uploaded.read()
     for enc in ["utf-8-sig", "utf-8", "cp1256"]:
         try:
@@ -189,18 +152,61 @@ def read_file(uploaded) -> str:
     raise ValueError("Cannot decode file — please save as UTF-8")
 
 
+def parse_law_index_from_filename(filename: str, laws: list[dict]) -> int | None:
+    """
+    Extract law number + year from Arabic TXT filename and find
+    its matching index in the JSON law list.
+
+    Filename pattern:
+      قانون_رقم_{NUMBER}_لسنة_{YEAR}_...ocr_1.txt
+    """
+    # Convert Arabic-Indic numerals just in case
+    fname = convert_numerals(filename)
+
+    # Extract number and year from filename
+    # Handles: رقم_43_لسنة_1976 or رقم_1_لسنة_1932 etc.
+    m = re.search(r'رقم[_\s]+(\d+)[_\s]+لسنة[_\s]+(\d+)', fname)
+    if not m:
+        # Try without رقم — just لسنة
+        m = re.search(r'لسنة[_\s]+(\d+)', fname)
+        if m:
+            year_from_file = m.group(1)
+            # Match by year only
+            for law in laws:
+                if str(law.get("year", "")) == year_from_file:
+                    return law["index"]
+        return None
+
+    num_from_file  = m.group(1)
+    year_from_file = m.group(2)
+
+    # Find matching law in JSON
+    for law in laws:
+        if (str(law.get("leg_number", "")) == num_from_file and
+                str(law.get("year", "")) == year_from_file):
+            return law["index"]
+
+    return None
+
+
 def list_laws(json_text: str) -> list[dict]:
-    """Parse law list from JSON text."""
     data = json.loads(json_text)
     if not isinstance(data, list):
         data = [data]
     laws = []
     for i, law in enumerate(data):
-        leg_num = convert_numerals(str(law.get("Leg_Number", "?")))
-        year    = convert_numerals(str(law.get("Year", "?")))
-        name    = law.get("Leg_Name", "N/A")
-        arts    = len(law.get("Articles", []))
-        laws.append({"index": i, "label": f"[{i}] Law {leg_num}/{year} — {name} ({arts} مادة)", "name": name})
+        leg_number = convert_numerals(str(law.get("Leg_Number", "?")))
+        year       = convert_numerals(str(law.get("Year", "?")))
+        name       = law.get("Leg_Name", "N/A")
+        arts       = len(law.get("Articles", []))
+        laws.append({
+            "index":      i,
+            "leg_number": leg_number,
+            "year":       year,
+            "name":       name,
+            "articles":   arts,
+            "label":      f"[{i}] Law {leg_number}/{year} — {name} ({arts} مادة)",
+        })
     return laws
 
 
@@ -210,35 +216,34 @@ def score_color(score: float) -> str:
     return "#dc3545"
 
 
+def row_border_class(match_pct: float) -> str:
+    if match_pct >= 95:  return "border-green"
+    if match_pct >= 80:  return "border-yellow"
+    if match_pct >= 0.1: return "border-red"
+    return "border-gray"
+
+
 def render_article_card(art, source: str) -> str:
-    """Render a single article as HTML card."""
-    text = art.json_text if source == "json" else art.txt_text
+    text         = art.json_text if source == "json" else art.txt_text
     status_class = f"badge-{art.status.value}"
     status_label = STATUS_AR.get(art.status, art.status.value)
-
     if not text:
-        return f"""
-        <div class="art-card art-missing">
+        return f"""<div class="art-card" style="background:#f8f9fa;">
             <div class="art-card-header">
                 <span class="art-num">مادة {art.article_number}</span>
                 <span class="badge {status_class}">{status_label}</span>
             </div>
-            <div class="art-text">— غير متوفر في هذا المصدر —</div>
+            <div class="art-text" style="color:#aaa;font-style:italic;">— غير متوفر في هذا المصدر —</div>
         </div>"""
-
     score_html = ""
     if art.similarity_score > 0:
         color = score_color(art.similarity_score)
-        score_html = f"""
-        <div class="score-bar-wrap">
+        score_html = f"""<div class="score-bar-wrap">
             <div class="score-bar"><div class="score-fill" style="width:{art.similarity_score}%;background:{color}"></div></div>
             <span style="font-size:0.75rem;color:{color};font-weight:600">{art.similarity_score:.0f}%</span>
         </div>"""
-
     preview = text[:400] + ("..." if len(text) > 400 else "")
-
-    return f"""
-    <div class="art-card">
+    return f"""<div class="art-card">
         <div class="art-card-header">
             <span class="art-num">مادة {art.article_number}</span>
             <span class="badge {status_class}">{status_label}</span>
@@ -248,240 +253,396 @@ def render_article_card(art, source: str) -> str:
     </div>"""
 
 
-# ── Session state ───────────────────────────────────────────────
-if "report" not in st.session_state:
-    st.session_state.report    = None
-if "report_paths" not in st.session_state:
-    st.session_state.report_paths = None
-if "json_text" not in st.session_state:
-    st.session_state.json_text = None
-if "txt_text" not in st.session_state:
-    st.session_state.txt_text  = None
+# ── Session state ────────────────────────────────────────────────
+for key in ["batch_results", "json_text", "laws", "pairing_summary"]:
+    if key not in st.session_state:
+        st.session_state[key] = None
 
 
-# ── Header ─────────────────────────────────────────────────────
+# ── Header ───────────────────────────────────────────────────────
 st.markdown("""
 <div class="main-header">
     <h1>⚖️ Law Comparison Pipeline</h1>
-    <p>نظام مقارنة النصوص القانونية — Arabic Legal Text Comparison System</p>
+    <p>نظام مقارنة النصوص القانونية — Batch mode: one JSON + multiple TXT files</p>
 </div>
 """, unsafe_allow_html=True)
 
 
-# ── Sidebar ─────────────────────────────────────────────────────
+# ── Sidebar ──────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 📁 Upload Files")
 
-    json_file = st.file_uploader("Source 1 — JSON", type=["json"], key="json_upload")
-    txt_file  = st.file_uploader("Source 2 — TXT",  type=["txt"],  key="txt_upload")
+    json_file = st.file_uploader(
+        "Source 1 — JSON (contains all laws)",
+        type=["json"], key="json_upload"
+    )
 
-    law_index = 0
-    law_name  = ""
+    txt_files = st.file_uploader(
+        "Source 2 — TXT files (one per law, multiple allowed)",
+        type=["txt"], accept_multiple_files=True, key="txt_upload"
+    )
 
-    if json_file:
+    # ── Parse JSON and preview pairing ──────────────────────────
+    pairing = []   # list of {txt_name, law_index, law_name, status}
+
+    if json_file and txt_files:
         try:
-            json_text = read_file(json_file)
+            json_text = read_bytes(json_file)
             st.session_state.json_text = json_text
             laws = list_laws(json_text)
-            if len(laws) > 1:
-                st.markdown("### 📋 Select Law")
-                options = {l["label"]: l["index"] for l in laws}
-                selected = st.selectbox("Law to compare:", list(options.keys()))
-                law_index = options[selected]
-                law_name  = laws[law_index]["name"]
-            else:
-                law_name = laws[0]["name"] if laws else ""
-                st.success(f"✓ 1 law found: {law_name[:40]}")
+            st.session_state.laws = laws
+            st.success(f"✓ JSON: {len(laws)} laws found")
+
+            st.markdown("---")
+            st.markdown("### 🔗 Auto-pairing preview")
+
+            used_indices = set()
+            for tf in txt_files:
+                idx = parse_law_index_from_filename(tf.name, laws)
+                if idx is None:
+                    pairing.append({
+                        "txt_name":  tf.name,
+                        "law_index": None,
+                        "law_name":  "❌ No match found",
+                        "status":    "error"
+                    })
+                elif idx in used_indices:
+                    pairing.append({
+                        "txt_name":  tf.name,
+                        "law_index": idx,
+                        "law_name":  laws[idx]["name"],
+                        "status":    "duplicate"
+                    })
+                else:
+                    used_indices.add(idx)
+                    pairing.append({
+                        "txt_name":  tf.name,
+                        "law_index": idx,
+                        "law_name":  laws[idx]["name"],
+                        "status":    "ok"
+                    })
+
+            st.session_state.pairing_summary = pairing
+
+            # Show pairing chips
+            for p in pairing:
+                chip_class = {
+                    "ok":        "chip-ok",
+                    "error":     "chip-err",
+                    "duplicate": "chip-warn",
+                }.get(p["status"], "chip-skip")
+                icon = {"ok": "✓", "error": "✗", "duplicate": "⚠"}.get(p["status"], "?")
+                short_name = p["law_name"][:35] + "..." if len(p["law_name"]) > 35 else p["law_name"]
+                st.markdown(
+                    f'<span class="pair-chip {chip_class}">{icon} {short_name}</span>',
+                    unsafe_allow_html=True
+                )
+
+            ok_count  = sum(1 for p in pairing if p["status"] == "ok")
+            err_count = sum(1 for p in pairing if p["status"] == "error")
+            st.markdown(f"**{ok_count}** paired ✅  |  **{err_count}** unmatched ❌")
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
+    elif json_file:
+        try:
+            json_text = read_bytes(json_file)
+            st.session_state.json_text = json_text
+            laws = list_laws(json_text)
+            st.session_state.laws = laws
+            st.success(f"✓ JSON: {len(laws)} laws found")
+            st.info("Now upload TXT files ↑")
         except Exception as e:
             st.error(f"JSON error: {e}")
-
-    if txt_file:
-        try:
-            txt_text = read_file(txt_file)
-            st.session_state.txt_text = txt_text
-            st.success(f"✓ TXT loaded: {len(txt_text):,} chars")
-        except Exception as e:
-            st.error(f"TXT error: {e}")
 
     st.markdown("---")
     st.markdown("### ⚙️ Settings")
     sim_threshold   = st.slider("Match threshold (%)",      70, 100, 95)
     fuzzy_threshold = st.slider("Near-match threshold (%)", 50, 95,  80)
-
     st.markdown("---")
 
+    ready  = (json_file and txt_files and
+              st.session_state.pairing_summary and
+              any(p["status"] == "ok" for p in
+                  (st.session_state.pairing_summary or [])))
+
     run_btn = st.button(
-        "🚀 Run Comparison",
+        "🚀 Run Batch Comparison",
         type="primary",
         use_container_width=True,
-        disabled=not (json_file and txt_file)
+        disabled=not ready
     )
 
 
-# ── Run pipeline ────────────────────────────────────────────────
-if run_btn and json_file and txt_file:
-    with st.spinner("Running pipeline..."):
-        try:
-            # Write temp files
-            with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as jf:
-                jf.write(st.session_state.json_text)
-                json_tmp = jf.name
+# ── Run batch pipeline ───────────────────────────────────────────
+if run_btn and ready:
 
-            with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w", encoding="utf-8") as tf:
-                tf.write(st.session_state.txt_text)
+    pairing     = st.session_state.pairing_summary
+    json_text   = st.session_state.json_text
+    laws        = st.session_state.laws
+    valid_pairs = [p for p in pairing if p["status"] == "ok"]
+
+    # Write JSON to temp file once
+    with tempfile.NamedTemporaryFile(
+        suffix=".json", delete=False, mode="w", encoding="utf-8"
+    ) as jf:
+        jf.write(json_text)
+        json_tmp = jf.name
+
+    # Reset results
+    st.session_state.batch_results = []
+
+    progress_bar = st.progress(0, text="Starting batch comparison...")
+    status_area  = st.empty()
+    batch_results = []
+
+    # Build a lookup: txt filename → uploaded file object
+    txt_lookup = {tf.name: tf for tf in txt_files}
+
+    for i, pair_info in enumerate(valid_pairs):
+        pct  = int((i / len(valid_pairs)) * 100)
+        law_name_short = pair_info["law_name"][:40]
+        progress_bar.progress(pct, text=f"[{i+1}/{len(valid_pairs)}] {law_name_short}...")
+        status_area.info(f"⚙️ Comparing: {law_name_short}")
+
+        try:
+            txt_file_obj = txt_lookup[pair_info["txt_name"]]
+            txt_text     = read_bytes(txt_file_obj)
+
+            # Write TXT to temp file
+            with tempfile.NamedTemporaryFile(
+                suffix=".txt", delete=False, mode="w", encoding="utf-8"
+            ) as tf:
+                tf.write(txt_text)
                 txt_tmp = tf.name
 
-            progress = st.progress(0, text="[1/4] Loading files...")
-            pair = load_pair(json_tmp, txt_tmp, law_index=law_index)
-            progress.progress(25, text="[2/4] Extracting articles...")
-
-            extracted = extract(st.session_state.txt_text)
-            progress.progress(50, text="[3/4] Comparing articles...")
-
-            # Apply threshold overrides
+            # Apply thresholds
             from src import config as cfg_mod
             cfg_mod.config.SIMILARITY_THRESHOLD  = sim_threshold
             cfg_mod.config.FUZZY_MATCH_THRESHOLD = fuzzy_threshold
 
-            report = compare(pair.source1, extracted, pair.law_id)
-            progress.progress(75, text="[4/4] Generating reports...")
+            # Run pipeline
+            pair     = load_pair(json_tmp, txt_tmp, law_index=pair_info["law_index"])
+            extracted = extract(txt_text)
+            report   = compare(pair.source1, extracted, pair.law_id)
+            paths    = generate_report(report)
 
-            paths = generate_report(report)
-            progress.progress(100, text="Done!")
-            time.sleep(0.3)
-            progress.empty()
-
-            st.session_state.report       = report
-            st.session_state.report_paths = paths
-
-            # Cleanup
-            os.unlink(json_tmp)
+            batch_results.append({
+                "report":    report,
+                "paths":     paths,
+                "txt_name":  pair_info["txt_name"],
+                "status":    "success",
+            })
             os.unlink(txt_tmp)
 
         except Exception as e:
-            st.error(f"Pipeline error: {e}")
-            import traceback
-            st.code(traceback.format_exc())
+            batch_results.append({
+                "report":   None,
+                "paths":    None,
+                "txt_name": pair_info["txt_name"],
+                "law_name": pair_info["law_name"],
+                "status":   "failed",
+                "error":    str(e),
+            })
+
+    os.unlink(json_tmp)
+
+    # Sort by match_pct ascending (worst first)
+    batch_results.sort(key=lambda x: (
+        x["report"].match_pct if x["report"] else 0
+    ))
+
+    progress_bar.progress(100, text="Done!")
+    time.sleep(0.5)
+    progress_bar.empty()
+    status_area.empty()
+    st.session_state.batch_results = batch_results
+    st.success(f"✅ Batch complete — {len([r for r in batch_results if r['status']=='success'])} laws compared!")
 
 
-# ── Results ─────────────────────────────────────────────────────
-report = st.session_state.report
+# ── Display results ──────────────────────────────────────────────
+batch_results = st.session_state.batch_results
 
-if report:
-    # ── KPI row ─────────────────────────────────────────────────
-    verdict_class = f"v-{report.overall_verdict}"
+if batch_results:
+
+    successful = [r for r in batch_results if r["status"] == "success"]
+    failed     = [r for r in batch_results if r["status"] == "failed"]
+
+    # ── Master KPIs ─────────────────────────────────────────────
+    total_json    = sum(r["report"].total_json       for r in successful)
+    total_match   = sum(r["report"].count_match      for r in successful)
+    total_near    = sum(r["report"].count_near_match for r in successful)
+    total_mis     = sum(r["report"].count_mismatch   for r in successful)
+    total_missing = sum(r["report"].count_missing    for r in successful)
+    total_extra   = sum(r["report"].count_extra      for r in successful)
+    avg_coverage  = (sum(r["report"].coverage_pct    for r in successful) / len(successful)) if successful else 0
+    avg_match     = (sum(r["report"].match_pct       for r in successful) / len(successful)) if successful else 0
+
     st.markdown(f"""
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-        <div>
-            <b style="font-size:1.1rem">{report.law_name}</b><br>
-            <span style="color:#666;font-size:0.85rem">Law {report.law_number}/{report.year}  |  Magazine № {report.metadata.json_magazine}</span>
-        </div>
-        <span class="verdict-badge {verdict_class}">الحكم: {report.overall_verdict}</span>
-    </div>
     <div class="kpi-row">
-        <div class="kpi-card kpi-cov"><div class="num">{report.coverage_pct:.1f}%</div><div class="lbl">التغطية</div></div>
-        <div class="kpi-card kpi-cov"><div class="num">{report.match_pct:.1f}%</div><div class="lbl">التطابق</div></div>
-        <div class="kpi-card kpi-match"><div class="num">{report.count_match}</div><div class="lbl">✅ تطابق</div></div>
-        <div class="kpi-card kpi-near"><div class="num">{report.count_near_match}</div><div class="lbl">⚠️ جزئي</div></div>
-        <div class="kpi-card kpi-mis"><div class="num">{report.count_mismatch}</div><div class="lbl">❌ تعارض</div></div>
-        <div class="kpi-card kpi-miss"><div class="num">{report.count_missing}</div><div class="lbl">🔍 غائب</div></div>
-        <div class="kpi-card kpi-extra"><div class="num">{report.count_extra}</div><div class="lbl">➕ زائد</div></div>
+        <div class="kpi-card kpi-cov"><div class="num">{len(successful)}</div><div class="lbl">Laws compared</div></div>
+        <div class="kpi-card kpi-cov"><div class="num">{avg_coverage:.1f}%</div><div class="lbl">Avg coverage</div></div>
+        <div class="kpi-card kpi-cov"><div class="num">{avg_match:.1f}%</div><div class="lbl">Avg match rate</div></div>
+        <div class="kpi-card kpi-match"><div class="num">{total_match}</div><div class="lbl">✅ Match</div></div>
+        <div class="kpi-card kpi-near"><div class="num">{total_near}</div><div class="lbl">⚠️ Near match</div></div>
+        <div class="kpi-card kpi-mis"><div class="num">{total_mis}</div><div class="lbl">❌ Mismatch</div></div>
+        <div class="kpi-card kpi-miss"><div class="num">{total_missing}</div><div class="lbl">🔍 Missing</div></div>
+        <div class="kpi-card kpi-extra"><div class="num">{total_extra}</div><div class="lbl">➕ Extra</div></div>
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Downloads ────────────────────────────────────────────────
-    paths = st.session_state.report_paths
-    if paths:
-        dl_col1, dl_col2, _ = st.columns([1, 1, 3])
-        with dl_col1:
-            with open(paths["html"], "rb") as f:
-                st.download_button("📄 Download HTML Report", f.read(),
-                    file_name=paths["html"].name, mime="text/html", use_container_width=True)
-        with dl_col2:
-            with open(paths["excel"], "rb") as f:
-                st.download_button("📊 Download Excel Summary", f.read(),
-                    file_name=paths["excel"].name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True)
-
+    st.caption("⬇️ Sorted by match rate — laws needing most attention appear first")
     st.markdown("---")
 
-    # ── Filters ──────────────────────────────────────────────────
-    st.markdown("### 🔍 Article Comparison")
+    # ── Failed runs ──────────────────────────────────────────────
+    if failed:
+        with st.expander(f"⚠️ {len(failed)} law(s) failed — click to see errors"):
+            for r in failed:
+                st.error(f"**{r.get('law_name', r['txt_name'])}** — {r['error']}")
 
-    filter_col1, filter_col2, filter_col3 = st.columns([2, 2, 1])
+    # ── Law rows (sorted worst first) ───────────────────────────
+    st.markdown("### 📋 Results by Law")
 
-    with filter_col1:
-        status_options = {
-            "الكل": None,
-            "✅ تطابق":         MatchStatus.MATCH,
-            "⚠️ تطابق جزئي":    MatchStatus.NEAR_MATCH,
-            "❌ تعارض":         MatchStatus.MISMATCH,
-            "🔍 غائب":          MatchStatus.MISSING,
-            "➕ زائد":          MatchStatus.EXTRA,
-        }
-        selected_status = st.selectbox("تصفية حسب الحالة:", list(status_options.keys()))
-        filter_status = status_options[selected_status]
+    for idx, result in enumerate(successful):
+        report = result["report"]
+        bc     = row_border_class(report.match_pct)
+        vc     = f"v-{report.overall_verdict.replace(' ', '-')}"
 
-    with filter_col2:
-        search_num = st.text_input("بحث برقم المادة:", placeholder="مثال: 42")
+        with st.expander(
+            f"{'❌' if report.match_pct < 80 else '⚠️' if report.match_pct < 95 else '✅'}  "
+            f"{report.law_name[:55]}  |  "
+            f"Match: {report.match_pct:.1f}%  |  "
+            f"Coverage: {report.coverage_pct:.1f}%",
+            expanded=(idx == 0)   # expand worst law by default
+        ):
+            # Law header
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                <div>
+                    <b>{report.law_name}</b><br>
+                    <span style="color:#666;font-size:0.82rem;">
+                        Law {report.law_number}/{report.year}  |
+                        Magazine № {report.metadata.json_magazine}
+                        {'✅' if report.metadata.match else '❌'}
+                    </span>
+                </div>
+                <span class="verdict-badge {vc}">الحكم: {report.overall_verdict}</span>
+            </div>
+            <div class="kpi-row">
+                <div class="kpi-card kpi-cov"><div class="num">{report.coverage_pct:.1f}%</div><div class="lbl">التغطية</div></div>
+                <div class="kpi-card kpi-cov"><div class="num">{report.match_pct:.1f}%</div><div class="lbl">التطابق</div></div>
+                <div class="kpi-card kpi-match"><div class="num">{report.count_match}</div><div class="lbl">✅ تطابق</div></div>
+                <div class="kpi-card kpi-near"><div class="num">{report.count_near_match}</div><div class="lbl">⚠️ جزئي</div></div>
+                <div class="kpi-card kpi-mis"><div class="num">{report.count_mismatch}</div><div class="lbl">❌ تعارض</div></div>
+                <div class="kpi-card kpi-miss"><div class="num">{report.count_missing}</div><div class="lbl">🔍 غائب</div></div>
+                <div class="kpi-card kpi-extra"><div class="num">{report.count_extra}</div><div class="lbl">➕ زائد</div></div>
+            </div>
+            """, unsafe_allow_html=True)
 
-    with filter_col3:
-        view_mode = st.radio("عرض:", ["جانبي ↔", "قائمة ☰"], horizontal=True)
+            # Downloads
+            paths = result["paths"]
+            if paths:
+                dl1, dl2, _ = st.columns([1, 1, 2])
+                with dl1:
+                    with open(paths["html"], "rb") as f:
+                        st.download_button(
+                            "📄 HTML Report", f.read(),
+                            file_name=paths["html"].name,
+                            mime="text/html",
+                            use_container_width=True,
+                            key=f"html_{idx}"
+                        )
+                with dl2:
+                    with open(paths["excel"], "rb") as f:
+                        st.download_button(
+                            "📊 Excel", f.read(),
+                            file_name=paths["excel"].name,
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key=f"excel_{idx}"
+                        )
 
-    # ── Filter articles ──────────────────────────────────────────
-    articles = report.articles
-    if filter_status:
-        articles = [a for a in articles if a.status == filter_status]
-    if search_num.strip():
-        articles = [a for a in articles if search_num.strip() in a.article_number]
+            st.markdown("---")
 
-    st.caption(f"عرض {len(articles)} من {len(report.articles)} مادة")
+            # ── Article viewer ───────────────────────────────────
+            st.markdown("#### 🔍 Article Comparison")
 
-    # ── Pagination ───────────────────────────────────────────────
-    PAGE_SIZE = 20
-    total_pages = max(1, (len(articles) + PAGE_SIZE - 1) // PAGE_SIZE)
-    page = st.number_input("الصفحة:", min_value=1, max_value=total_pages, value=1, step=1)
-    page_articles = articles[(page - 1) * PAGE_SIZE : page * PAGE_SIZE]
+            fc1, fc2, fc3 = st.columns([2, 2, 1])
+            with fc1:
+                status_opts = {
+                    "الكل": None,
+                    "✅ تطابق":       MatchStatus.MATCH,
+                    "⚠️ جزئي":        MatchStatus.NEAR_MATCH,
+                    "❌ تعارض":       MatchStatus.MISMATCH,
+                    "🔍 غائب":        MatchStatus.MISSING,
+                    "➕ زائد":        MatchStatus.EXTRA,
+                }
+                sel_status = st.selectbox(
+                    "تصفية:", list(status_opts.keys()),
+                    key=f"filter_{idx}"
+                )
+                filter_status = status_opts[sel_status]
 
-    st.caption(f"صفحة {page} من {total_pages}")
-    st.markdown("---")
+            with fc2:
+                search = st.text_input(
+                    "بحث برقم المادة:", placeholder="مثال: 42",
+                    key=f"search_{idx}"
+                )
 
-    # ── Side-by-side view ────────────────────────────────────────
-    if view_mode == "جانبي ↔":
-        hdr_left, hdr_right = st.columns(2)
-        with hdr_left:
-            st.markdown("#### 📘 المصدر الأول (JSON)")
-        with hdr_right:
-            st.markdown("#### 📗 المصدر الثاني (TXT)")
+            with fc3:
+                view = st.radio(
+                    "عرض:", ["↔ جانبي", "☰ قائمة"],
+                    key=f"view_{idx}", horizontal=True
+                )
 
-        for art in page_articles:
-            col_l, col_r = st.columns(2)
-            with col_l:
-                st.markdown(render_article_card(art, "json"), unsafe_allow_html=True)
-            with col_r:
-                st.markdown(render_article_card(art, "txt"), unsafe_allow_html=True)
+            # Filter
+            arts = report.articles
+            if filter_status:
+                arts = [a for a in arts if a.status == filter_status]
+            if search.strip():
+                arts = [a for a in arts if search.strip() in a.article_number]
 
-    # ── List view ────────────────────────────────────────────────
-    else:
-        for art in page_articles:
-            with st.expander(
-                f"مادة {art.article_number}  |  "
-                f"{STATUS_AR.get(art.status, '')}  |  "
-                f"{'%.0f%%' % art.similarity_score if art.similarity_score > 0 else '—'}",
-                expanded=art.status in (MatchStatus.MISMATCH, MatchStatus.NEAR_MATCH)
-            ):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("**📘 المصدر الأول (JSON)**")
-                    st.text_area("", art.json_text or "— غير متوفر —",
-                        height=150, key=f"j_{art.article_number}", disabled=True)
-                with c2:
-                    st.markdown("**📗 المصدر الثاني (TXT)**")
-                    st.text_area("", art.txt_text or "— غير متوفر —",
-                        height=150, key=f"t_{art.article_number}", disabled=True)
-                if art.diff_hint:
-                    st.caption(f"🔍 فارق: {art.diff_hint}")
+            # Paginate
+            PAGE = 15
+            total_pages = max(1, (len(arts) + PAGE - 1) // PAGE)
+            page = st.number_input(
+                f"صفحة (من {total_pages}):", min_value=1,
+                max_value=total_pages, value=1, key=f"page_{idx}"
+            )
+            page_arts = arts[(page-1)*PAGE : page*PAGE]
+            st.caption(f"عرض {len(arts)} مادة")
+
+            # Render
+            if view == "↔ جانبي":
+                h1c, h2c = st.columns(2)
+                with h1c: st.markdown("**📘 المصدر الأول (JSON)**")
+                with h2c: st.markdown("**📗 المصدر الثاني (TXT)**")
+                for art in page_arts:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown(render_article_card(art, "json"), unsafe_allow_html=True)
+                    with c2:
+                        st.markdown(render_article_card(art, "txt"),  unsafe_allow_html=True)
+            else:
+                for art in page_arts:
+                    with st.expander(
+                        f"مادة {art.article_number}  |  "
+                        f"{STATUS_AR.get(art.status,'')}  |  "
+                        f"{'%.0f%%' % art.similarity_score if art.similarity_score > 0 else '—'}",
+                        expanded=art.status in (MatchStatus.MISMATCH, MatchStatus.NEAR_MATCH)
+                    ):
+                        a1, a2 = st.columns(2)
+                        with a1:
+                            st.markdown("**📘 JSON**")
+                            st.text_area("", art.json_text or "— غير متوفر —",
+                                height=140, key=f"j_{idx}_{art.article_number}", disabled=True)
+                        with a2:
+                            st.markdown("**📗 TXT**")
+                            st.text_area("", art.txt_text or "— غير متوفر —",
+                                height=140, key=f"t_{idx}_{art.article_number}", disabled=True)
+                        if art.diff_hint:
+                            st.caption(f"🔍 {art.diff_hint}")
 
 else:
     # ── Empty state ──────────────────────────────────────────────
@@ -489,12 +650,13 @@ else:
     <div style="text-align:center;padding:3rem;color:#aaa;">
         <div style="font-size:3rem">⚖️</div>
         <h3 style="color:#888">ابدأ المقارنة</h3>
-        <p>ارفع ملف JSON وملف TXT من الشريط الجانبي ثم اضغط <b>Run Comparison</b></p>
+        <p>ارفع ملف JSON وملفات TXT من الشريط الجانبي ثم اضغط <b>Run Batch Comparison</b></p>
         <br>
-        <div style="display:inline-flex;gap:2rem;font-size:0.85rem;">
-            <div>📁 <b>Source 1</b><br>ملف JSON يحتوي على القوانين</div>
-            <div>📄 <b>Source 2</b><br>ملف TXT من مصدر OCR</div>
-            <div>📊 <b>التقارير</b><br>HTML + Excel تلقائياً</div>
+        <div style="display:inline-flex;gap:2rem;font-size:0.85rem;flex-wrap:wrap;">
+            <div>📁 <b>JSON</b><br>ملف واحد يحتوي على كل القوانين</div>
+            <div>📄 <b>TXT files</b><br>ملف لكل قانون (متعدد)</div>
+            <div>🔗 <b>Auto-pair</b><br>ربط تلقائي عبر اسم الملف</div>
+            <div>📊 <b>Sorted</b><br>الأسوأ أولاً للمراجعة</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
