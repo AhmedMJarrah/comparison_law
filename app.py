@@ -179,10 +179,15 @@ def parse_law_index_from_filename(filename: str, laws: list[dict]) -> int | None
                     str(law.get("year", "")) == year_from_file):
                 return law["index"]
 
-        # Try year only as fallback (if law number differs slightly)
+        # Format B fallback: law has leg_number="?" — match by year only
         for law in laws:
             if str(law.get("year", "")) == year_from_file:
                 return law["index"]
+
+        # Format B fallback 2: law has leg_number="?" and year="?"
+        # Match by index position if only one law in the file
+        if len(laws) == 1:
+            return laws[0]["index"]
 
     # Strategy 2: extract just لسنة (last resort)
     m2 = re.search(r'لسنة[_\s]+(\d+)', fname)
@@ -201,21 +206,37 @@ def list_laws(json_text: str) -> list[dict]:
         data = [data]
     laws = []
     for i, law in enumerate(data):
-        leg_number = convert_numerals(str(law.get("Leg_Number", "?")))
-        year       = convert_numerals(str(law.get("Year", "?")))
-        name       = law.get("Leg_Name", "N/A")
-        arts       = len(law.get("Articles", []))
+        if "Leg_Number" in law or "Articles" in law:
+            leg_number = convert_numerals(str(law.get("Leg_Number", "?")))
+            year       = convert_numerals(str(law.get("Year", "?")))
+            name       = law.get("Leg_Name", "N/A")
+            arts       = len(law.get("Articles", []))
+        else:
+            # Format B: extract from text content
+            arts     = len(law)
+            combined = convert_numerals(
+                " ".join(str(v) for v in list(law.values())[:5])
+            )
+            # Search for: رقم (N) لسنة YYYY
+            import re as _re_b
+            mb = _re_b.search(r"\d+[)\]] \u0644\u0633\u0646\u0629 (\d{4})", combined)
+            mc = _re_b.search(r"(\d{1,4})/(\d{4})", combined)
+            if mc:
+                leg_number = mc.group(1)
+                year       = mc.group(2)
+            else:
+                leg_number = "?"
+                year       = "?"
+            name = f"Format-B Law {leg_number}/{year}"
         laws.append({
             "index":      i,
             "leg_number": leg_number,
             "year":       year,
             "name":       name,
             "articles":   arts,
-            "label":      f"[{i}] Law {leg_number}/{year} — {name} ({arts} مادة)",
+            "label":      f"[{i}] Law {leg_number}/{year} — {name} ({arts} articles)",
         })
     return laws
-
-
 def score_color(score: float) -> str:
     if score >= 95: return "#28a745"
     if score >= 80: return "#ffc107"
