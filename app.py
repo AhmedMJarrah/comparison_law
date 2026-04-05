@@ -157,34 +157,40 @@ def parse_law_index_from_filename(filename: str, laws: list[dict]) -> int | None
     Extract law number + year from Arabic TXT filename and find
     its matching index in the JSON law list.
 
-    Filename pattern:
-      قانون_رقم_{NUMBER}_لسنة_{YEAR}_...ocr_1.txt
+    Handles all known filename patterns:
+      قانون_رقم_{N}_لسنة_{Y}         plain law
+      قانون_معدل_رقم_{N}_لسنة_{Y}    amended law
+      قانون_مؤقت_رقم_{N}_لسنة_{Y}    temporary law
+      قانون_مؤقت_معدل_رقم_{N}_لسنة_{Y} temporary amended law
     """
     # Convert Arabic-Indic numerals just in case
     fname = convert_numerals(filename)
 
-    # Extract number and year from filename
-    # Handles: رقم_43_لسنة_1976 or رقم_1_لسنة_1932 etc.
+    # Strategy 1: extract رقم + لسنة together (most reliable)
+    # Handles: رقم_31_لسنة_2017 regardless of what comes before رقم
     m = re.search(r'رقم[_\s]+(\d+)[_\s]+لسنة[_\s]+(\d+)', fname)
-    if not m:
-        # Try without رقم — just لسنة
-        m = re.search(r'لسنة[_\s]+(\d+)', fname)
-        if m:
-            year_from_file = m.group(1)
-            # Match by year only
-            for law in laws:
-                if str(law.get("year", "")) == year_from_file:
-                    return law["index"]
-        return None
+    if m:
+        num_from_file  = m.group(1)
+        year_from_file = m.group(2)
 
-    num_from_file  = m.group(1)
-    year_from_file = m.group(2)
+        # Try exact match first (number + year)
+        for law in laws:
+            if (str(law.get("leg_number", "")) == num_from_file and
+                    str(law.get("year", "")) == year_from_file):
+                return law["index"]
 
-    # Find matching law in JSON
-    for law in laws:
-        if (str(law.get("leg_number", "")) == num_from_file and
-                str(law.get("year", "")) == year_from_file):
-            return law["index"]
+        # Try year only as fallback (if law number differs slightly)
+        for law in laws:
+            if str(law.get("year", "")) == year_from_file:
+                return law["index"]
+
+    # Strategy 2: extract just لسنة (last resort)
+    m2 = re.search(r'لسنة[_\s]+(\d+)', fname)
+    if m2:
+        year_from_file = m2.group(1)
+        for law in laws:
+            if str(law.get("year", "")) == year_from_file:
+                return law["index"]
 
     return None
 
