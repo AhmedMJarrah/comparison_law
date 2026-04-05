@@ -193,6 +193,17 @@ def _split_into_articles(text: str) -> list[tuple[str, str]]:
             logger.debug(f"Article {article_number} has empty body - skipping.")
             continue
 
+        # Minimum body length filter:
+        # Real articles have substantial content.
+        # References like "المادة (83) من القانون" produce near-empty bodies.
+        # 20 chars minimum filters out false positives from inline references.
+        if len(raw_body.strip()) < 20:
+            logger.debug(
+                f"Article {article_number} skipped — "
+                f"body too short ({len(raw_body)} chars), likely a reference."
+            )
+            continue
+
         # Deduplication: keep the richer (longer) version
         if article_number in seen:
             existing_len, _ = seen[article_number]

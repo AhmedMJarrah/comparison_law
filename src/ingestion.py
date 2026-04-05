@@ -168,6 +168,405 @@ def _validate_json_structure(data: dict) -> list[str]:
 
 
 # ──────────────────────────────────────────────
+# JSON Format Detection
+# ──────────────────────────────────────────────
+
+def detect_json_format(data) -> str:
+    """
+    Detect which JSON format the data uses.
+
+    Format A (old structured):
+      {"Leg_Number": "43", "Year": "1976", "Articles": [...]}
+      OR a list of such objects
+
+    Format B (new pre-segmented):
+      {"1": "المادة 1 - ...", "2": "المادة 2 - ...", ...}
+      Keys are article numbers (numeric strings), values are article texts.
+
+    Returns: "A" or "B"
+    """
+    # If it is a list, check the first element
+    check = data[0] if isinstance(data, list) else data
+
+    if not isinstance(check, dict):
+        return "A"
+
+    # Format B signature: ALL keys are numeric strings
+    # and values are strings (article texts)
+    keys = list(check.keys())
+    if not keys:
+        return "A"
+
+    numeric_keys = sum(1 for k in keys[:20] if str(k).strip().isdigit())
+    string_values = sum(
+        1 for k in keys[:20]
+        if isinstance(check.get(k), str)
+    )
+
+    # If >80% of sample keys are numeric and values are strings → Format B
+    sample = min(20, len(keys))
+    if numeric_keys / sample >= 0.8 and string_values / sample >= 0.8:
+        return "B"
+
+    return "A"
+
+
+def _strip_article_header(text: str, article_number: str) -> str:
+    """
+    Remove the article header from Format B article text.
+
+    The text contains the header inside it, e.g.:
+      "المادة 1 - يسمى هذا القانون..."
+      "المادة ١ - يسمى هذا القانون..."
+
+    We strip the header to get just the body — consistent
+    with how Format A stores articles (body only in 'text' field).
+    """
+    from src.normalizer import convert_numerals
+
+    # Convert Arabic-Indic numerals in text for matching
+    text_converted = convert_numerals(text.strip())
+    num_converted  = convert_numerals(str(article_number).strip())
+
+    # Pattern: المادة {number} followed by optional brackets, dashes, spaces
+    pattern = re.compile(
+        r"^[\s\-–]*المادة[\s\-–]*[([]?"
+        + re.escape(num_converted)
+        + r"[)\]]?[\s\-–]*",
+        re.UNICODE
+    )
+
+    cleaned = pattern.sub("", text_converted).strip()
+
+    # If nothing was stripped, return original (header may vary)
+    return cleaned if cleaned else text_converted
+
+
+def _clean_format_b_text(text: str) -> str:
+    """
+    Clean a Format B JSON value:
+    - Remove OCR page break markers: --- Page X ---
+    - Remove markdown headings: # Title, ## Title
+    - Remove table-of-contents lines (contain | characters)
+    - Collapse excessive whitespace
+    """
+    lines  = text.split("\n")
+    cleaned = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            cleaned.append("")
+            continue
+        # Skip page break markers
+        if re.match(r"^-{2,}\s*Page\s*\d+\s*-{2,}$", s, re.IGNORECASE):
+            continue
+        # Skip table of contents lines (contain multiple | separators)
+        if s.count("|") >= 2:
+            continue
+        # Skip pure markdown headings that are section titles (not article headers)
+        if re.match(r"^#{1,6}\s+[^0-9]", s) and "المادة" not in s:
+            continue
+        # Skip pure page number lines
+        if re.match(r"^\d{1,4}$", s):
+            continue
+        cleaned.append(line)
+    result = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned))
+    return result.strip()
+
+
+def _extract_articles_from_chunk(
+    chunk_text: str,
+    hint_key: str,
+) -> list[tuple[str, str]]:
+    """
+    Extract one or more articles from a Format B JSON value.
+
+    Strategy:
+      1. Clean the chunk (remove page markers, TOC lines etc.)
+      2. Run the article header regex to find all المادة N headers
+      3. If headers found  → split on them and return list of (number, body)
+      4. If NO header found → use hint_key as article number, entire text as body
+
+    Returns: list of (article_number: str, body_text: str)
+    """
+    from src.normalizer import convert_numerals as _cv
+
+    text = _clean_format_b_text(chunk_text)
+    text = _cv(text)
+
+    # Regex: same pattern as extractor.py RE_ARTICLE
+    RE = re.compile(
+        r"(?:^|\n)[ \t]*(?:#{1,6}[ \t]*)?(?:\*{1,2})?[ \t]*-?[ \t]*"
+        r"المادة[ \t]*-?[ \t]*[(\[]?[ \t]*(\d+)(?:-\d+)?"
+        r"[ \t]*[)\]]?(?:\*{0,2})[ \t]*[-–]?(?![ \t]*\u0645\u0646)"
+    )
+
+    matches = list(RE.finditer(text))
+
+    if not matches:
+        # No article header found in this chunk
+        # Use hint_key as the article number if it looks numeric
+        hint = str(hint_key).strip()
+        body = text.strip()
+        if body and hint.isdigit():
+            return [(hint, body)]
+        return []
+
+    results = []
+    seen    = set()
+
+    for i, m in enumerate(matches):
+        art_num    = m.group(1).strip()
+        body_start = m.end()
+        body_end   = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        body       = text[body_start:body_end].strip()
+
+        if not body or art_num in seen:
+            continue
+        seen.add(art_num)
+        results.append((art_num, body))
+
+    return results
+
+
+def _is_article_chunk(text: str, key: str) -> bool:
+    """
+    Determine if a Format B chunk is a real article or non-article content.
+
+    A chunk is considered NOT a pure article if:
+      - Its dominant content is a table of contents (many | characters)
+      - It has no meaningful Arabic text after cleaning
+
+    NOTE: even if a chunk fails this check, _parse_format_b will still
+    attempt to extract article content from it using _extract_article_after_toc()
+    so no content is lost.
+    """
+    from src.normalizer import convert_numerals as _cv
+    t = _cv(text.strip())
+
+    # Check meaningful content after stripping noise
+    lines = t.split("\n")
+    meaningful = []
+    toc_lines  = 0
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if re.match(r"^-{2,}\s*Page\s*\d+", s, re.IGNORECASE):
+            continue
+        if s.count("|") >= 2:
+            toc_lines += 1
+            continue
+        if re.match(r"^\d{1,4}$", s):
+            continue
+        if re.match(r"^#", s) and "المادة" not in s:
+            continue
+        meaningful.append(s)
+
+    total_content = " ".join(meaningful)
+
+    # Pure TOC/header with no meaningful text → not an article chunk
+    if len(total_content) < 10:
+        return False
+
+    # Mostly TOC (more TOC lines than content lines) → not a pure article
+    # but may still contain an article embedded after the TOC
+    if toc_lines > len(meaningful):
+        return False
+
+    return True
+
+
+def _extract_article_after_toc(text: str, expected_num: str) -> str:
+    """
+    For mixed chunks (TOC + article), find the article content
+    that appears AFTER the table of contents section.
+
+    Strategy: find the law header line or first المادة N line,
+    then take everything from there onwards.
+    """
+    from src.normalizer import convert_numerals as _cv
+    t = _cv(text)
+    lines = t.split("\n")
+
+    # Find where the actual law content starts
+    # Either: "قانون رقم (N) لسنة YYYY" or "المادة N -"
+    start_idx = None
+    for i, line in enumerate(lines):
+        s = line.strip()
+        # Law header line
+        if re.search(r"قانون\s+(?:معدل\s+)?رقم\s*[([]?\s*\d+", s):
+            start_idx = i
+            break
+        # Article header line matching expected number
+        art_pattern = re.compile(
+            r"المادة\s*[([]?\s*" + re.escape(expected_num) + r"\s*[)\]]?\s*[-–]"
+        )
+        if art_pattern.search(s):
+            start_idx = i
+            break
+
+    if start_idx is None:
+        return ""
+
+    # Search the ENTIRE chunk for the article header
+    # (not just from start_idx — the article may be anywhere after TOC)
+    art_start_idx = None
+    num_conv      = convert_numerals(expected_num)
+    art_pattern   = re.compile(
+        r"المادة\s*[([]?\s*" + re.escape(num_conv) + r"\s*[)\]]?\s*[-–]"
+    )
+    for i, line in enumerate(lines):
+        if art_pattern.search(convert_numerals(line)):
+            art_start_idx = i
+            break
+
+    # If article header found anywhere → use that (most precise)
+    # If not found → fall back to law header position
+    actual_start = art_start_idx if art_start_idx is not None else start_idx
+
+    # Take content from actual_start onwards
+    content_lines = []
+    for line in lines[actual_start:]:
+        s = line.strip()
+        # Skip page markers
+        if re.match(r"^-{{2,}}\s*Page\s*\d+", s, re.IGNORECASE):
+            continue
+        content_lines.append(line)
+
+    result = "\n".join(content_lines).strip()
+    # Strip the article header from the result
+    result = _strip_article_header(result, expected_num)
+    return result.strip()
+
+
+def _parse_format_b(data: dict) -> tuple[LawSource1, list[str]]:
+    """
+    Parse a Format B JSON into a LawSource1 object.
+
+    Format B structure:
+      {
+        "1": "القسم الثاني ... (table of contents)",
+        "2": "المادة ٢ - تعدل المادة (٥) ...",
+        "3": "المادة ٣ - يلغى ...",
+        ...
+      }
+
+    Strategy: USE THE KEY as the article number (keys are reliable).
+    Strip the article header from the value to get the body.
+    Skip non-article chunks (TOC, page headers).
+
+    This avoids false positives from article number references
+    that appear inside article body text.
+
+    Returns: (LawSource1, warnings_list)
+    """
+    warnings = []
+
+    # Sort keys numerically
+    try:
+        sorted_keys = sorted(data.keys(), key=lambda k: int(str(k).strip()))
+    except (ValueError, TypeError):
+        sorted_keys = list(data.keys())
+        warnings.append("Could not sort keys numerically — using original order.")
+
+    articles   = []
+    skipped    = 0
+
+    for key in sorted_keys:
+        raw_value = str(data[key]).strip()
+        if not raw_value:
+            continue
+
+        art_num = str(key).strip()
+
+        if not _is_article_chunk(raw_value, key):
+            # Chunk is not a pure article (e.g. TOC + article mixed)
+            # Attempt to rescue the article content from after the TOC
+            rescued = _extract_article_after_toc(raw_value, art_num)
+            if rescued:
+                logger.info(
+                    f"Format B: rescued article {art_num} from mixed chunk (key [{key}])"
+                )
+                articles.append(Article(
+                    article_number   = art_num,
+                    title            = f"المادة {art_num}",
+                    enforcement_date = "",
+                    text             = rescued,
+                ))
+            else:
+                skipped += 1
+                logger.debug(f"Format B: skipped key [{key}] — no article content found")
+            continue
+
+        # For any chunk — use _extract_article_after_toc first
+        # This precisely finds the article header and takes only what follows
+        # Works for both pure article chunks AND mixed TOC+article chunks
+        body = _extract_article_after_toc(raw_value, art_num)
+
+        if not body.strip():
+            # Fallback: clean and strip header manually
+            body = _clean_format_b_text(raw_value)
+            body = convert_numerals(body)
+            body = _strip_article_header(body, art_num)
+
+        if not body.strip():
+            skipped += 1
+            continue
+
+        articles.append(Article(
+            article_number   = art_num,
+            title            = f"المادة {art_num}",
+            enforcement_date = "",
+            text             = body.strip(),
+        ))
+
+    if skipped > 0:
+        logger.info(f"Format B: skipped {skipped} non-article chunks (no content found)")
+
+    if not articles:
+        warnings.append(
+            "Format B: no articles extracted after filtering. "
+            "Check that JSON values contain article text."
+        )
+
+    # Extract law number + year from the first few chunks
+    leg_number = ""
+    year       = ""
+    all_text   = convert_numerals(" ".join(str(v) for v in list(data.values())[:5]))
+
+    m = re.search(
+        r"قانون\s+(?:معدل\s+)?(?:مؤقت\s+)?رقم\s*[([]?\s*(\d+)\s*[)\]]?\s+لسنة\s+(\d+)",
+        all_text
+    )
+    if m:
+        leg_number = m.group(1).strip()
+        year       = m.group(2).strip()
+        logger.info(f"Format B: extracted law {leg_number}/{year}")
+    else:
+        warnings.append(
+            "Format B: could not extract law number/year. "
+            "Cross-validation will be skipped."
+        )
+
+    law = LawSource1(
+        leg_name       = "",
+        leg_number     = leg_number,
+        year           = year,
+        magazine_number= "",
+        magazine_page  = "",
+        magazine_date  = "",
+        articles       = articles,
+    )
+
+    logger.info(
+        f"Format B parsed: {len(articles)} articles "
+        f"({skipped} skipped), law={leg_number}/{year}"
+    )
+    return law, warnings
+
+
+# ──────────────────────────────────────────────
 # Parsers
 # ──────────────────────────────────────────────
 
@@ -220,10 +619,14 @@ def list_laws_in_json(json_path: str) -> None:
 def _parse_source1(json_path: Path, law_index: int = 0) -> tuple[LawSource1, list[str]]:
     """
     Parse a validated JSON file into a LawSource1 object.
+    Auto-detects JSON format (A or B) and routes accordingly.
+
+    Format A: {"Leg_Number":..., "Articles":[...]}  — structured metadata
+    Format B: {"1": "المادة 1 -...", "2": "..."}    — pre-segmented articles
 
     Args:
         json_path : Path to the JSON file
-        law_index : Index of the law to load (0-based) when JSON has multiple laws
+        law_index : Index of the law to load (0-based) — only used for Format A
 
     Returns:
         (LawSource1, warnings_list)
@@ -259,6 +662,20 @@ def _parse_source1(json_path: Path, law_index: int = 0) -> tuple[LawSource1, lis
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in '{json_path.name}': {e}")
 
+    # ── Auto-detect JSON format ────────────────
+    fmt = detect_json_format(data)
+    logger.info(f"Detected JSON format: {fmt} for '{json_path.name}'")
+
+    # ── Format B: pre-segmented articles ──────
+    if fmt == "B":
+        # Format B is always a single dict — law_index not applicable
+        law, fmt_warnings = _parse_format_b(data)
+        warnings.extend(fmt_warnings)
+        warnings.append("Format B detected: pre-segmented JSON (no metadata).")
+        logger.info(f"Source1 parsed (Format B): {law}")
+        return law, warnings
+
+    # ── Format A: structured with metadata ────
     # JSON may be a list (multiple laws) or a dict (single law object)
     if isinstance(data, list):
         if len(data) == 0:
@@ -305,7 +722,7 @@ def _parse_source1(json_path: Path, law_index: int = 0) -> tuple[LawSource1, lis
         articles       = articles,
     )
 
-    logger.info(f"Source1 parsed: {law}")
+    logger.info(f"Source1 parsed (Format A): {law}")
     return law, warnings
 
 
@@ -364,21 +781,30 @@ def _cross_validate(source1: LawSource1, source2: LawSource2) -> tuple[bool, lis
     """
     Cross-check that both files appear to belong to the same law.
 
-    Strategy:
-      - Extract law number and year from Source 2 raw text
-        using Arabic pattern: قانون رقم (٤٣) لسنة ١٩٧٦
-      - Compare with Source 1 Leg_Number and Year
+    Format A: compare Leg_Number + Year from JSON against TXT content.
+    Format B: JSON has no metadata — attempt to extract from TXT and
+              compare against what was parsed from article text.
+              If nothing to compare, skip validation gracefully.
 
     Returns:
         (is_valid: bool, warnings: list[str])
     """
     warnings = []
 
+    # If Format B had no metadata, skip cross-validation
+    if not source1.leg_number and not source1.year:
+        warnings.append(
+            "Format B JSON has no metadata — cross-validation skipped. "
+            "Make sure the JSON and TXT files belong to the same law."
+        )
+        logger.info("Cross-validation skipped (Format B — no metadata).")
+        return False, warnings
+
     # Pattern: قانون رقم (43) لسنة 1976  (after numeral conversion)
     txt_normalized = convert_numerals(source2.raw_text)
 
     pattern = re.search(
-        r'قانون\s+(?:مؤقت\s+)?رقم\s*[(\[]?\s*(\d+)\s*[)\]]?\s+لسنة\s+(\d+)',
+        r'قانون\s+(?:معدل\s+)?(?:مؤقت\s+)?رقم\s*[(\[]?\s*(\d+)\s*[)\]]?\s+لسنة\s+(\d+)',
         txt_normalized
     )
 
