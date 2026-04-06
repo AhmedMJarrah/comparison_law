@@ -24,7 +24,7 @@ from enum import Enum
 from rapidfuzz import fuzz
 
 from src.config import config
-from src.normalizer import normalize, normalize_number
+from src.normalizer import normalize, normalize_number, flatten_article_text
 from src.ingestion import LawSource1, Article
 from src.extractor import ExtractedLaw, ExtractedArticle, build_article_index
 
@@ -239,8 +239,11 @@ def _score_articles(
     Final score = weighted average of both.
     """
     # Normalize both texts for comparison
-    json_norm = normalize(json_article.text, for_comparison=True)
-    txt_norm  = txt_article.text_normalized
+    # flatten_article_text strips sub-clause markers (1. 2. / أولاً: / أ- ب-)
+    # and OCR noise (page breaks, page numbers) from BOTH sources
+    # so scoring reflects actual content differences not formatting differences
+    json_norm = normalize(flatten_article_text(json_article.text), for_comparison=True)
+    txt_norm  = normalize(flatten_article_text(txt_article.text_normalized), for_comparison=True)
 
     # Score 1: token sort ratio (order-independent word matching)
     score_token = fuzz.token_sort_ratio(json_norm, txt_norm)

@@ -913,6 +913,176 @@ def load_pair(json_path: str, txt_path: str, law_index: int = 0) -> PairedLaw:
 
 
 # ──────────────────────────────────────────────
+# JSON vs JSON Pair Loader
+# ──────────────────────────────────────────────
+
+def _format_b_to_extracted_law(source1_b: "LawSource1") -> "ExtractedLaw":
+    """
+    Convert a Format B LawSource1 (parsed from JSON) into an ExtractedLaw
+    so it can flow into comparator.py exactly like a TXT-extracted source.
+
+    Why this conversion is needed:
+      comparator.py expects source 2 as ExtractedLaw (list of ExtractedArticle).
+      Format B JSON articles are stored as LawSource1.articles (list of Article).
+      By converting here, ALL downstream code (comparator, reporter, app)
+      works identically regardless of whether source 2 came from TXT or JSON.
+
+    The text_normalized field uses flatten_article_text() + normalize()
+    so sub-clause markers are stripped before comparison — same treatment
+    as TXT articles.
+    """
+    from src.extractor import ExtractedLaw, ExtractedArticle
+    from src.normalizer import normalize, flatten_article_text
+
+    extracted_articles = []
+    for art in source1_b.articles:
+        raw_text  = art.text or ""
+        norm_text = normalize(flatten_article_text(raw_text), for_comparison=True)
+        extracted_articles.append(ExtractedArticle(
+            article_number  = art.article_number,
+            text            = raw_text,       # raw — for display in reports
+            text_normalized = norm_text,      # normalized — for comparison
+        ))
+
+    return ExtractedLaw(
+        magazine_number = source1_b.magazine_number or "",
+        law_number      = source1_b.leg_number      or "",
+        year            = source1_b.year            or "",
+        articles        = extracted_articles,
+        warnings        = [],
+    )
+
+
+def load_json_pair(
+    json1_path: str,
+    json2_path: str,
+    law1_index: int = 0,
+) -> "PairedLaw":
+    """
+    Load and pair two JSON files for JSON-vs-JSON comparison.
+
+    Source 1: Format A JSON  (structured, with metadata)
+              e.g. qistas_ext.json — law 43/1976
+    Source 2: Format B JSON  (pre-segmented, key=article_number, value=text)
+              e.g. قانون_معدل_رقم_31_لسنة_2017_ocr.json
+
+    The function:
+      1. Validates both paths as .json files
+      2. Auto-detects and parses each (Format A or B)
+      3. Converts Source 2 into ExtractedLaw so comparator.py
+         receives the same types as the TXT workflow
+      4. Cross-validates law number + year if metadata is available
+      5. Returns a PairedLaw ready for compare() + generate_report()
+
+    Args:
+        json1_path  : Path to Source 1 JSON (Format A — structured)
+        json2_path  : Path to Source 2 JSON (Format B — pre-segmented)
+        law1_index  : Which law to load from Source 1 (default 0)
+                      Use list_laws_in_json() to see available laws.
+
+    Returns:
+        PairedLaw object — identical structure to load_pair() output.
+    """
+    all_warnings = []
+
+    logger.info("=" * 50)
+    logger.info("INGESTION STARTED (JSON vs JSON)")
+    logger.info(f"  JSON 1 : {json1_path}")
+    logger.info(f"  JSON 2 : {json2_path}")
+    logger.info(f"  Index  : {law1_index}")
+    logger.info("=" * 50)
+
+    # ── Step 1: Validate both paths ──────────────
+    validated_j1 = _validate_path(json1_path, ".json")
+    validated_j2 = _validate_path(json2_path, ".json")
+
+    # ── Step 2: Parse Source 1 (Format A expected) ─
+    source1, w1 = _parse_source1(validated_j1, law_index=law1_index)
+    all_warnings.extend(w1)
+
+    logger.info(f"Source 1 parsed: {len(source1.articles)} articles")
+
+    # ── Step 3: Parse Source 2 (Format B expected) ─
+    source2_raw, w2 = _parse_source1(validated_j2, law_index=0)
+    all_warnings.extend(w2)
+
+    logger.info(f"Source 2 parsed: {len(source2_raw.articles)} articles")
+
+    # ── Step 4: Convert Source 2 → ExtractedLaw ──
+    # This makes comparator.py receive identical types
+    # regardless of whether source 2 came from TXT or JSON
+    extracted = _format_b_to_extracted_law(source2_raw)
+
+    # ── Step 5: Cross-validate (best effort) ──────
+    is_valid   = False
+    cv_warnings = []
+
+    s1_num  = source1.leg_number.strip()
+    s1_year = source1.year.strip()
+    s2_num  = source2_raw.leg_number.strip()
+    s2_year = source2_raw.year.strip()
+
+    if s1_num and s1_year and s2_num and s2_year:
+        num_match  = (s1_num  == s2_num)
+        year_match = (s1_year == s2_year)
+        if num_match and year_match:
+            is_valid = True
+            logger.info(f"Cross-validation passed: {s1_num}/{s1_year}")
+        else:
+            if not num_match:
+                cv_warnings.append(
+                    f"Law number mismatch: Source1={s1_num}, Source2={s2_num}"
+                )
+            if not year_match:
+                cv_warnings.append(
+                    f"Year mismatch: Source1={s1_year}, Source2={s2_year}"
+                )
+            logger.warning("Cross-validation FAILED — possible wrong file pairing.")
+    else:
+        cv_warnings.append(
+            "JSON-vs-JSON: one or both sources have no metadata — "
+            "cross-validation skipped. Verify files belong to the same law."
+        )
+
+    all_warnings.extend(cv_warnings)
+
+    # ── Step 6: Wrap in a LawSource2 for PairedLaw ─
+    # PairedLaw.source2 expects LawSource2 (raw text holder)
+    # We embed the ExtractedLaw in it via a sentinel path
+    # so the pipeline can detect JSON-vs-JSON mode
+    source2_wrapper = LawSource2(
+        raw_text  = "__JSON_SOURCE__",   # sentinel — signals no TXT
+        file_path = str(validated_j2),
+    )
+
+    # ── Step 7: Build law_id ──────────────────────
+    law_id = f"law_{source1.leg_number}_{source1.year}"
+
+    # ── Step 8: Log warnings ──────────────────────
+    if all_warnings:
+        logger.warning(f"Ingestion completed with {len(all_warnings)} warning(s):")
+        for w in all_warnings:
+            logger.warning(f"  ⚠  {w}")
+    else:
+        logger.info("Ingestion completed with no warnings ✓")
+
+    paired = PairedLaw(
+        law_id          = law_id,
+        source1         = source1,
+        source2         = source2_wrapper,
+        cross_validated = is_valid,
+        warnings        = all_warnings,
+    )
+
+    # Attach the ExtractedLaw directly so comparator can use it
+    # without needing to run the TXT extractor
+    paired._extracted = extracted
+
+    logger.info(f"PairedLaw created (JSON-vs-JSON): {paired}")
+    return paired
+
+
+# ──────────────────────────────────────────────
 # Quick Self-Test
 # ──────────────────────────────────────────────
 

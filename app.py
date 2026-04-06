@@ -125,7 +125,7 @@ Path("/tmp/output/summaries").mkdir(parents=True, exist_ok=True)
 import logging
 logging.basicConfig(level=logging.WARNING)
 
-from src.ingestion  import load_pair
+from src.ingestion  import load_pair, load_json_pair
 from src.extractor  import extract
 from src.comparator import compare, MatchStatus, STATUS_EMOJI, STATUS_LABEL
 from src.reporter   import generate_report
@@ -281,7 +281,7 @@ def render_article_card(art, source: str) -> str:
 
 
 # ── Session state ────────────────────────────────────────────────
-for key in ["batch_results", "json_text", "laws", "pairing_summary"]:
+for key in ["batch_results", "json_text", "laws", "pairing_summary", "mode"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -290,29 +290,54 @@ for key in ["batch_results", "json_text", "laws", "pairing_summary"]:
 st.markdown("""
 <div class="main-header">
     <h1>⚖️ Law Comparison Pipeline</h1>
-    <p>نظام مقارنة النصوص القانونية — Batch mode: one JSON + multiple TXT files</p>
+    <p>نظام مقارنة النصوص القانونية — JSON vs TXT  |  JSON vs JSON</p>
 </div>
 """, unsafe_allow_html=True)
 
 
 # ── Sidebar ──────────────────────────────────────────────────────
 with st.sidebar:
+
+    # ── Mode selector ────────────────────────────────────────────
+    st.markdown("### ⚖️ Comparison Mode")
+    mode = st.radio(
+        "Select source 2 type:",
+        ["📄 JSON vs TXT", "📋 JSON vs JSON"],
+        key="mode_selector",
+        horizontal=False,
+    )
+    st.session_state.mode = mode
+    is_json_mode = (mode == "📋 JSON vs JSON")
+
+    st.markdown("---")
     st.markdown("### 📁 Upload Files")
 
+    # ── Source 1: always a JSON (Format A) ──────────────────────
     json_file = st.file_uploader(
-        "Source 1 — JSON (contains all laws)",
+        "Source 1 — JSON (Format A, contains all laws)",
         type=["json"], key="json_upload"
     )
 
-    txt_files = st.file_uploader(
-        "Source 2 — TXT files (one per law, multiple allowed)",
-        type=["txt"], accept_multiple_files=True, key="txt_upload"
-    )
+    # ── Source 2: TXT or JSON depending on mode ──────────────────
+    if is_json_mode:
+        json2_files = st.file_uploader(
+            "Source 2 — JSON files (Format B, one per law)",
+            type=["json"], accept_multiple_files=True, key="json2_upload"
+        )
+        txt_files = []
+    else:
+        txt_files = st.file_uploader(
+            "Source 2 — TXT files (one per law, multiple allowed)",
+            type=["txt"], accept_multiple_files=True, key="txt_upload"
+        )
+        json2_files = []
 
-    # ── Parse JSON and preview pairing ──────────────────────────
-    pairing = []   # list of {txt_name, law_index, law_name, status}
+    # ── Parse Source 1 and preview pairing ──────────────────────
+    pairing = []
+    source2_files = json2_files if is_json_mode else txt_files
+    source2_ext   = ".json"     if is_json_mode else ".txt"
 
-    if json_file and txt_files:
+    if json_file and source2_files:
         try:
             json_text = read_bytes(json_file)
             st.session_state.json_text = json_text
@@ -324,29 +349,32 @@ with st.sidebar:
             st.markdown("### 🔗 Auto-pairing preview")
 
             used_indices = set()
-            for tf in txt_files:
-                idx = parse_law_index_from_filename(tf.name, laws)
+            for sf in source2_files:
+                idx = parse_law_index_from_filename(sf.name, laws)
                 if idx is None:
                     pairing.append({
-                        "txt_name":  tf.name,
-                        "law_index": None,
-                        "law_name":  "❌ No match found",
-                        "status":    "error"
+                        "file_name":  sf.name,
+                        "law_index":  None,
+                        "law_name":   "❌ No match found",
+                        "status":     "error",
+                        "is_json":    is_json_mode,
                     })
                 elif idx in used_indices:
                     pairing.append({
-                        "txt_name":  tf.name,
-                        "law_index": idx,
-                        "law_name":  laws[idx]["name"],
-                        "status":    "duplicate"
+                        "file_name":  sf.name,
+                        "law_index":  idx,
+                        "law_name":   laws[idx]["name"],
+                        "status":     "duplicate",
+                        "is_json":    is_json_mode,
                     })
                 else:
                     used_indices.add(idx)
                     pairing.append({
-                        "txt_name":  tf.name,
-                        "law_index": idx,
-                        "law_name":  laws[idx]["name"],
-                        "status":    "ok"
+                        "file_name":  sf.name,
+                        "law_index":  idx,
+                        "law_name":   laws[idx]["name"],
+                        "status":     "ok",
+                        "is_json":    is_json_mode,
                     })
 
             st.session_state.pairing_summary = pairing
@@ -360,8 +388,9 @@ with st.sidebar:
                 }.get(p["status"], "chip-skip")
                 icon = {"ok": "✓", "error": "✗", "duplicate": "⚠"}.get(p["status"], "?")
                 short_name = p["law_name"][:35] + "..." if len(p["law_name"]) > 35 else p["law_name"]
+                mode_icon  = "📋" if is_json_mode else "📄"
                 st.markdown(
-                    f'<span class="pair-chip {chip_class}">{icon} {short_name}</span>',
+                    f'<span class="pair-chip {chip_class}">{icon} {mode_icon} {short_name}</span>',
                     unsafe_allow_html=True
                 )
 
@@ -379,7 +408,8 @@ with st.sidebar:
             laws = list_laws(json_text)
             st.session_state.laws = laws
             st.success(f"✓ JSON: {len(laws)} laws found")
-            st.info("Now upload TXT files ↑")
+            hint = "Now upload JSON files (Format B) ↑" if is_json_mode else "Now upload TXT files ↑"
+            st.info(hint)
         except Exception as e:
             st.error(f"JSON error: {e}")
 
@@ -389,88 +419,108 @@ with st.sidebar:
     fuzzy_threshold = st.slider("Near-match threshold (%)", 50, 95,  80)
     st.markdown("---")
 
-    ready  = (json_file and txt_files and
-              st.session_state.pairing_summary and
-              any(p["status"] == "ok" for p in
-                  (st.session_state.pairing_summary or [])))
+    ready = (json_file and source2_files and
+             st.session_state.pairing_summary and
+             any(p["status"] == "ok" for p in
+                 (st.session_state.pairing_summary or [])))
 
+    btn_label = "🚀 Run JSON vs JSON" if is_json_mode else "🚀 Run Batch Comparison"
     run_btn = st.button(
-        "🚀 Run Batch Comparison",
+        btn_label,
         type="primary",
         use_container_width=True,
         disabled=not ready
     )
-
-
 # ── Run batch pipeline ───────────────────────────────────────────
 if run_btn and ready:
 
-    pairing     = st.session_state.pairing_summary
-    json_text   = st.session_state.json_text
-    laws        = st.session_state.laws
-    valid_pairs = [p for p in pairing if p["status"] == "ok"]
+    pairing      = st.session_state.pairing_summary
+    json_text    = st.session_state.json_text
+    laws         = st.session_state.laws
+    valid_pairs  = [p for p in pairing if p["status"] == "ok"]
+    is_json_mode = st.session_state.get("mode") == "📋 JSON vs JSON"
 
-    # Write JSON to temp file once
+    # Write Source 1 JSON to temp file once
     with tempfile.NamedTemporaryFile(
         suffix=".json", delete=False, mode="w", encoding="utf-8"
     ) as jf:
         jf.write(json_text)
         json_tmp = jf.name
 
-    # Reset results
     st.session_state.batch_results = []
-
-    progress_bar = st.progress(0, text="Starting batch comparison...")
-    status_area  = st.empty()
+    progress_bar  = st.progress(0, text="Starting comparison...")
+    status_area   = st.empty()
     batch_results = []
 
-    # Build a lookup: txt filename → uploaded file object
-    txt_lookup = {tf.name: tf for tf in txt_files}
+    # Build lookup: filename → uploaded file object
+    if is_json_mode:
+        file_lookup = {sf.name: sf for sf in json2_files}
+    else:
+        file_lookup = {sf.name: sf for sf in txt_files}
 
     for i, pair_info in enumerate(valid_pairs):
-        pct  = int((i / len(valid_pairs)) * 100)
+        pct = int((i / len(valid_pairs)) * 100)
         law_name_short = pair_info["law_name"][:40]
         progress_bar.progress(pct, text=f"[{i+1}/{len(valid_pairs)}] {law_name_short}...")
         status_area.info(f"⚙️ Comparing: {law_name_short}")
 
         try:
-            txt_file_obj = txt_lookup[pair_info["txt_name"]]
-            txt_text     = read_bytes(txt_file_obj)
-
-            # Write TXT to temp file
-            with tempfile.NamedTemporaryFile(
-                suffix=".txt", delete=False, mode="w", encoding="utf-8"
-            ) as tf:
-                tf.write(txt_text)
-                txt_tmp = tf.name
+            src2_file_obj = file_lookup[pair_info["file_name"]]
+            src2_text     = read_bytes(src2_file_obj)
 
             # Apply thresholds
             from src import config as cfg_mod
             cfg_mod.config.SIMILARITY_THRESHOLD  = sim_threshold
             cfg_mod.config.FUZZY_MATCH_THRESHOLD = fuzzy_threshold
 
-            # Run pipeline
-            pair     = load_pair(json_tmp, txt_tmp, law_index=pair_info["law_index"])
-            extracted = extract(txt_text)
-            report   = compare(pair.source1, extracted, pair.law_id)
-            paths    = generate_report(report)
+            if is_json_mode:
+                # ── JSON vs JSON mode ────────────────────────────
+                # Write Source 2 JSON to temp file
+                with tempfile.NamedTemporaryFile(
+                    suffix=".json", delete=False, mode="w", encoding="utf-8"
+                ) as j2f:
+                    j2f.write(src2_text)
+                    json2_tmp = j2f.name
+
+                pair_obj = load_json_pair(
+                    json_tmp, json2_tmp,
+                    law1_index=pair_info["law_index"]
+                )
+                extracted = pair_obj._extracted
+                os.unlink(json2_tmp)
+
+            else:
+                # ── JSON vs TXT mode (existing workflow) ─────────
+                with tempfile.NamedTemporaryFile(
+                    suffix=".txt", delete=False, mode="w", encoding="utf-8"
+                ) as tf:
+                    tf.write(src2_text)
+                    txt_tmp = tf.name
+
+                pair_obj  = load_pair(json_tmp, txt_tmp, law_index=pair_info["law_index"])
+                extracted = extract(src2_text)
+                os.unlink(txt_tmp)
+
+            report = compare(pair_obj.source1, extracted, pair_obj.law_id)
+            paths  = generate_report(report)
 
             batch_results.append({
                 "report":    report,
                 "paths":     paths,
-                "txt_name":  pair_info["txt_name"],
+                "file_name": pair_info["file_name"],
+                "is_json":   is_json_mode,
                 "status":    "success",
             })
-            os.unlink(txt_tmp)
 
         except Exception as e:
             batch_results.append({
-                "report":   None,
-                "paths":    None,
-                "txt_name": pair_info["txt_name"],
-                "law_name": pair_info["law_name"],
-                "status":   "failed",
-                "error":    str(e),
+                "report":    None,
+                "paths":     None,
+                "file_name": pair_info["file_name"],
+                "law_name":  pair_info["law_name"],
+                "is_json":   is_json_mode,
+                "status":    "failed",
+                "error":     str(e),
             })
 
     os.unlink(json_tmp)
@@ -485,9 +535,10 @@ if run_btn and ready:
     progress_bar.empty()
     status_area.empty()
     st.session_state.batch_results = batch_results
-    st.success(f"✅ Batch complete — {len([r for r in batch_results if r['status']=='success'])} laws compared!")
 
-
+    ok_count = len([r for r in batch_results if r["status"] == "success"])
+    mode_label = "JSON vs JSON" if is_json_mode else "JSON vs TXT"
+    st.success(f"✅ {mode_label} complete — {ok_count} laws compared!")
 # ── Display results ──────────────────────────────────────────────
 batch_results = st.session_state.batch_results
 
@@ -519,14 +570,16 @@ if batch_results:
     </div>
     """, unsafe_allow_html=True)
 
-    st.caption("⬇️ Sorted by match rate — laws needing most attention appear first")
+    mode_used = st.session_state.get("mode", "📄 JSON vs TXT")
+    mode_badge = "📋 JSON vs JSON" if "JSON vs JSON" in mode_used else "📄 JSON vs TXT"
+    st.caption(f"Mode: {mode_badge} — ⬇️ sorted by match rate (worst first)")
     st.markdown("---")
 
     # ── Failed runs ──────────────────────────────────────────────
     if failed:
         with st.expander(f"⚠️ {len(failed)} law(s) failed — click to see errors"):
             for r in failed:
-                st.error(f"**{r.get('law_name', r['txt_name'])}** — {r['error']}")
+                st.error(f"**{r.get('law_name', r.get('file_name','?'))}** — {r['error']}")
 
     # ── Law rows (sorted worst first) ───────────────────────────
     st.markdown("### 📋 Results by Law")

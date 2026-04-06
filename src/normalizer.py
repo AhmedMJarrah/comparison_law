@@ -10,7 +10,7 @@ Handles:
   - Taa marbuta normalization         (ة → ه)
   - Tatweel removal                   (ـ)
   - Whitespace & punctuation cleanup
-  - Sub-clause marker normalization   (٢ – / 2\ → unified format)
+  - Sub-clause marker normalization   (٢ – / 2. → unified format)
 
 All toggles are driven by config (which reads from .env).
 """
@@ -99,6 +99,123 @@ def normalize_sub_clauses(text: str) -> str:
     text = re.sub(r'(?m)^\s*(\d+)\s*[-–]\s*', r'[\1] ', text)
     # Source 1 pattern: numeral followed by dot
     text = re.sub(r'(?m)^\s*(\d+)\.\s*', r'[\1] ', text)
+    return text
+
+
+# ──────────────────────────────────────────────
+# Article Text Flattening
+# ──────────────────────────────────────────────
+
+# Patterns that mark the START of a sub-clause inside an article body.
+# These are formatting markers, not article identifiers.
+# All patterns are stripped before comparison so both sources
+# produce identical clean text regardless of how they were formatted.
+
+# Ordinal markers: أولاً: / ثانياً: / ثالثاً: etc.
+_RE_ORDINAL = re.compile(
+    r"(?:أولاً|ثانياً|ثالثاً|رابعاً|خامساً|سادساً|سابعاً|ثامناً|تاسعاً|عاشراً)"
+    r"\s*[:–-]\s*",
+    re.UNICODE
+)
+
+# Lettered markers: أ- / ب- / ج- / أ) / ب) etc.
+_RE_LETTER_MARKER = re.compile(
+    r"(?m)^[ 	]*[أبتثجحخدذرزسشصضطظعغفقكلمنهوي]\s*[-–)\]]\s*",
+    re.UNICODE
+)
+
+# Numbered+lettered compound markers: ١-أ- / 2-أ- / ٢-ب- etc.
+_RE_COMPOUND_MARKER = re.compile(
+    r"(?m)^[ 	]*\d+\s*-\s*[أبتثجحخدذرزسشصضطظعغفقكلمنهوي]\s*-\s*",
+    re.UNICODE
+)
+
+# Numbered markers: 1. / ١. / 1- / ١- at line start
+_RE_NUMBERED_MARKER = re.compile(
+    r"(?m)^[ 	]*\d+\s*[.\-–)\]]\s*",
+    re.UNICODE
+)
+
+# Page break markers from OCR: --- Page N ---
+_RE_PAGE_BREAK = re.compile(
+    r"-{2,}\s*Page\s*\d+\s*-{2,}",
+    re.IGNORECASE
+)
+
+# Standalone page numbers: a line that is only digits (e.g. "٥٣٩٢")
+_RE_PAGE_NUMBER = re.compile(
+    r"(?m)^\s*\d{3,5}\s*$"
+)
+
+# Journal/header lines: الجريدة الرسمية (common OCR artifact in Format B)
+_RE_JOURNAL = re.compile(
+    r"الجريدة\s+الرسمية\s*",
+    re.UNICODE
+)
+
+
+def flatten_article_text(text: str) -> str:
+    """
+    Flatten an article text body for accurate comparison.
+
+    The problem:
+      Source 1 (Format A) stores article bodies with numbered clauses:
+        "1. تسري نصوص... 2. فاذا لم تجد... 3. فان لم توجد..."
+
+      Source 2 (Format B) stores the same article with ordinal/lettered clauses:
+        "أولاً: تسري نصوص... ثانياً: فاذا لم تجد... ثالثاً: فان لم توجد..."
+
+      Same legal content — different formatting → unfair score penalty.
+
+    The solution:
+      Strip ALL sub-clause markers from BOTH sources so the comparator
+      sees only the actual legal text. This maximizes similarity scores
+      for genuinely matching content and minimizes false mismatches
+      caused purely by formatting differences.
+
+    What is stripped:
+      - Ordinal markers:          أولاً: / ثانياً: / ثالثاً: ...
+      - Lettered markers:         أ- / ب- / ج- ...
+      - Compound markers:         ١-أ- / 2-ب- ...
+      - Numbered markers:         1. / 2. / ١- / ٢- ...
+      - OCR page break markers:   --- Page 7 ---
+      - Standalone page numbers:  ٥٣٩٢
+      - Journal header lines:     الجريدة الرسمية
+
+    What is NOT stripped:
+      - The article header itself (المادة N -) — handled by caller
+      - References to other articles: "المادة (٥) من القانون الأصلي"
+        → these are CONTENT, not formatting markers
+      - Ordinals used mid-sentence: "على أن يكون أولاً..."
+
+    Scalability:
+      Works for all Jordanian law formats because it targets
+      universal Arabic clause-marking conventions, not
+      law-specific patterns.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    # Step 1: Convert numerals so all regex work on Western digits
+    text = convert_numerals(text)
+
+    # Step 2: Remove OCR noise (page breaks, page numbers, journal header)
+    text = _RE_PAGE_BREAK.sub(" ", text)
+    text = _RE_PAGE_NUMBER.sub("", text)
+    text = _RE_JOURNAL.sub(" ", text)
+
+    # Step 3: Strip sub-clause markers
+    # Order matters: compound (١-أ-) before numbered (١-) before lettered (أ-)
+    text = _RE_COMPOUND_MARKER.sub("", text)
+    text = _RE_ORDINAL.sub("", text)
+    text = _RE_LETTER_MARKER.sub("", text)
+    text = _RE_NUMBERED_MARKER.sub("", text)
+
+    # Step 4: Collapse whitespace — multiple newlines/spaces → single space
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n+", " ", text)
+    text = text.strip()
+
     return text
 
 
