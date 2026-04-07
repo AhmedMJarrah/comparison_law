@@ -1072,4 +1072,4 @@ if batch_results and tab_editor:
                                  key=f"rst_law_{law_id}"):
                         st.session_state.edits_s1[law_id] = {}
                         st.session_state.edits_s2[law_id] = {}
-                        st.rerun()
+                        st.rerun() 
