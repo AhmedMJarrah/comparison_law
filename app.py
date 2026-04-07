@@ -281,9 +281,21 @@ def render_article_card(art, source: str) -> str:
 
 
 # ── Session state ────────────────────────────────────────────────
-for key in ["batch_results", "json_text", "laws", "pairing_summary", "mode"]:
+for key in ["batch_results", "json_text", "laws", "pairing_summary", "mode",
+            "edits_s1", "edits_s2", "editor_law_idx", "editor_art_idx",
+            "editor_filter", "raw_json1_map", "raw_json2_map"]:
     if key not in st.session_state:
         st.session_state[key] = None
+
+# Editor edits are dicts: {law_id: {article_number: edited_text}}
+if st.session_state.edits_s1 is None:
+    st.session_state.edits_s1 = {}
+if st.session_state.edits_s2 is None:
+    st.session_state.edits_s2 = {}
+if st.session_state.raw_json1_map is None:
+    st.session_state.raw_json1_map = {}   # law_id → original json1 text
+if st.session_state.raw_json2_map is None:
+    st.session_state.raw_json2_map = {}   # law_id → original json2 text
 
 
 # ── Header ───────────────────────────────────────────────────────
@@ -536,6 +548,17 @@ if run_btn and ready:
     status_area.empty()
     st.session_state.batch_results = batch_results
 
+    # Store raw JSON texts for editor (needed to rebuild JSON on save)
+    # key = law_id, value = original raw JSON text
+    raw_j1 = {}
+    raw_j2 = {}
+    for r in batch_results:
+        if r["status"] == "success":
+            lid = r["report"].law_id
+            raw_j1[lid] = json_text   # Source 1 always same JSON
+    st.session_state.raw_json1_map = raw_j1
+    st.session_state.raw_json2_map = raw_j2
+
     ok_count = len([r for r in batch_results if r["status"] == "success"])
     mode_label = "JSON vs JSON" if is_json_mode else "JSON vs TXT"
     st.success(f"✅ {mode_label} complete — {ok_count} laws compared!")
@@ -543,186 +566,194 @@ if run_btn and ready:
 batch_results = st.session_state.batch_results
 
 if batch_results:
+    tab_results, tab_editor = st.tabs(["📊 Results", "✏️ Article Editor"])
+else:
+    tab_results = None
+    tab_editor  = None
 
-    successful = [r for r in batch_results if r["status"] == "success"]
-    failed     = [r for r in batch_results if r["status"] == "failed"]
+if batch_results and tab_results:
+  with tab_results:
+   if True:
 
-    # ── Master KPIs ─────────────────────────────────────────────
-    total_json    = sum(r["report"].total_json       for r in successful)
-    total_match   = sum(r["report"].count_match      for r in successful)
-    total_near    = sum(r["report"].count_near_match for r in successful)
-    total_mis     = sum(r["report"].count_mismatch   for r in successful)
-    total_missing = sum(r["report"].count_missing    for r in successful)
-    total_extra   = sum(r["report"].count_extra      for r in successful)
-    avg_coverage  = (sum(r["report"].coverage_pct    for r in successful) / len(successful)) if successful else 0
-    avg_match     = (sum(r["report"].match_pct       for r in successful) / len(successful)) if successful else 0
+        successful = [r for r in batch_results if r["status"] == "success"]
+        failed     = [r for r in batch_results if r["status"] == "failed"]
 
-    st.markdown(f"""
-    <div class="kpi-row">
-        <div class="kpi-card kpi-cov"><div class="num">{len(successful)}</div><div class="lbl">Laws compared</div></div>
-        <div class="kpi-card kpi-cov"><div class="num">{avg_coverage:.1f}%</div><div class="lbl">Avg coverage</div></div>
-        <div class="kpi-card kpi-cov"><div class="num">{avg_match:.1f}%</div><div class="lbl">Avg match rate</div></div>
-        <div class="kpi-card kpi-match"><div class="num">{total_match}</div><div class="lbl">✅ Match</div></div>
-        <div class="kpi-card kpi-near"><div class="num">{total_near}</div><div class="lbl">⚠️ Near match</div></div>
-        <div class="kpi-card kpi-mis"><div class="num">{total_mis}</div><div class="lbl">❌ Mismatch</div></div>
-        <div class="kpi-card kpi-miss"><div class="num">{total_missing}</div><div class="lbl">🔍 Missing</div></div>
-        <div class="kpi-card kpi-extra"><div class="num">{total_extra}</div><div class="lbl">➕ Extra</div></div>
-    </div>
-    """, unsafe_allow_html=True)
+        # ── Master KPIs ─────────────────────────────────────────────
+        total_json    = sum(r["report"].total_json       for r in successful)
+        total_match   = sum(r["report"].count_match      for r in successful)
+        total_near    = sum(r["report"].count_near_match for r in successful)
+        total_mis     = sum(r["report"].count_mismatch   for r in successful)
+        total_missing = sum(r["report"].count_missing    for r in successful)
+        total_extra   = sum(r["report"].count_extra      for r in successful)
+        avg_coverage  = (sum(r["report"].coverage_pct    for r in successful) / len(successful)) if successful else 0
+        avg_match     = (sum(r["report"].match_pct       for r in successful) / len(successful)) if successful else 0
 
-    mode_used = st.session_state.get("mode", "📄 JSON vs TXT")
-    mode_badge = "📋 JSON vs JSON" if "JSON vs JSON" in mode_used else "📄 JSON vs TXT"
-    st.caption(f"Mode: {mode_badge} — ⬇️ sorted by match rate (worst first)")
-    st.markdown("---")
+        st.markdown(f"""
+        <div class="kpi-row">
+            <div class="kpi-card kpi-cov"><div class="num">{len(successful)}</div><div class="lbl">Laws compared</div></div>
+            <div class="kpi-card kpi-cov"><div class="num">{avg_coverage:.1f}%</div><div class="lbl">Avg coverage</div></div>
+            <div class="kpi-card kpi-cov"><div class="num">{avg_match:.1f}%</div><div class="lbl">Avg match rate</div></div>
+            <div class="kpi-card kpi-match"><div class="num">{total_match}</div><div class="lbl">✅ Match</div></div>
+            <div class="kpi-card kpi-near"><div class="num">{total_near}</div><div class="lbl">⚠️ Near match</div></div>
+            <div class="kpi-card kpi-mis"><div class="num">{total_mis}</div><div class="lbl">❌ Mismatch</div></div>
+            <div class="kpi-card kpi-miss"><div class="num">{total_missing}</div><div class="lbl">🔍 Missing</div></div>
+            <div class="kpi-card kpi-extra"><div class="num">{total_extra}</div><div class="lbl">➕ Extra</div></div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # ── Failed runs ──────────────────────────────────────────────
-    if failed:
-        with st.expander(f"⚠️ {len(failed)} law(s) failed — click to see errors"):
-            for r in failed:
-                st.error(f"**{r.get('law_name', r.get('file_name','?'))}** — {r['error']}")
+        mode_used = st.session_state.get("mode", "📄 JSON vs TXT")
+        mode_badge = "📋 JSON vs JSON" if "JSON vs JSON" in mode_used else "📄 JSON vs TXT"
+        st.caption(f"Mode: {mode_badge} — ⬇️ sorted by match rate (worst first)")
+        st.markdown("---")
 
-    # ── Law rows (sorted worst first) ───────────────────────────
-    st.markdown("### 📋 Results by Law")
+        # ── Failed runs ──────────────────────────────────────────────
+        if failed:
+            with st.expander(f"⚠️ {len(failed)} law(s) failed — click to see errors"):
+                for r in failed:
+                    st.error(f"**{r.get('law_name', r.get('file_name','?'))}** — {r['error']}")
 
-    for idx, result in enumerate(successful):
-        report = result["report"]
-        bc     = row_border_class(report.match_pct)
-        vc     = f"v-{report.overall_verdict.replace(' ', '-')}"
+        # ── Law rows (sorted worst first) ───────────────────────────
+        st.markdown("### 📋 Results by Law")
 
-        with st.expander(
-            f"{'❌' if report.match_pct < 80 else '⚠️' if report.match_pct < 95 else '✅'}  "
-            f"{report.law_name[:55]}  |  "
-            f"Match: {report.match_pct:.1f}%  |  "
-            f"Coverage: {report.coverage_pct:.1f}%",
-            expanded=(idx == 0)   # expand worst law by default
-        ):
-            # Law header
-            st.markdown(f"""
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-                <div>
-                    <b>{report.law_name}</b><br>
-                    <span style="color:#666;font-size:0.82rem;">
-                        Law {report.law_number}/{report.year}  |
-                        Magazine № {report.metadata.json_magazine}
-                        {'✅' if report.metadata.match else '❌'}
-                    </span>
+        for idx, result in enumerate(successful):
+            report = result["report"]
+            bc     = row_border_class(report.match_pct)
+            vc     = f"v-{report.overall_verdict.replace(' ', '-')}"
+
+            with st.expander(
+                f"{'❌' if report.match_pct < 80 else '⚠️' if report.match_pct < 95 else '✅'}  "
+                f"{report.law_name[:55]}  |  "
+                f"Match: {report.match_pct:.1f}%  |  "
+                f"Coverage: {report.coverage_pct:.1f}%",
+                expanded=(idx == 0)   # expand worst law by default
+            ):
+                # Law header
+                st.markdown(f"""
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+                    <div>
+                        <b>{report.law_name}</b><br>
+                        <span style="color:#666;font-size:0.82rem;">
+                            Law {report.law_number}/{report.year}  |
+                            Magazine № {report.metadata.json_magazine}
+                            {'✅' if report.metadata.match else '❌'}
+                        </span>
+                    </div>
+                    <span class="verdict-badge {vc}">الحكم: {report.overall_verdict}</span>
                 </div>
-                <span class="verdict-badge {vc}">الحكم: {report.overall_verdict}</span>
-            </div>
-            <div class="kpi-row">
-                <div class="kpi-card kpi-cov"><div class="num">{report.coverage_pct:.1f}%</div><div class="lbl">التغطية</div></div>
-                <div class="kpi-card kpi-cov"><div class="num">{report.match_pct:.1f}%</div><div class="lbl">التطابق</div></div>
-                <div class="kpi-card kpi-match"><div class="num">{report.count_match}</div><div class="lbl">✅ تطابق</div></div>
-                <div class="kpi-card kpi-near"><div class="num">{report.count_near_match}</div><div class="lbl">⚠️ جزئي</div></div>
-                <div class="kpi-card kpi-mis"><div class="num">{report.count_mismatch}</div><div class="lbl">❌ تعارض</div></div>
-                <div class="kpi-card kpi-miss"><div class="num">{report.count_missing}</div><div class="lbl">🔍 غائب</div></div>
-                <div class="kpi-card kpi-extra"><div class="num">{report.count_extra}</div><div class="lbl">➕ زائد</div></div>
-            </div>
-            """, unsafe_allow_html=True)
+                <div class="kpi-row">
+                    <div class="kpi-card kpi-cov"><div class="num">{report.coverage_pct:.1f}%</div><div class="lbl">التغطية</div></div>
+                    <div class="kpi-card kpi-cov"><div class="num">{report.match_pct:.1f}%</div><div class="lbl">التطابق</div></div>
+                    <div class="kpi-card kpi-match"><div class="num">{report.count_match}</div><div class="lbl">✅ تطابق</div></div>
+                    <div class="kpi-card kpi-near"><div class="num">{report.count_near_match}</div><div class="lbl">⚠️ جزئي</div></div>
+                    <div class="kpi-card kpi-mis"><div class="num">{report.count_mismatch}</div><div class="lbl">❌ تعارض</div></div>
+                    <div class="kpi-card kpi-miss"><div class="num">{report.count_missing}</div><div class="lbl">🔍 غائب</div></div>
+                    <div class="kpi-card kpi-extra"><div class="num">{report.count_extra}</div><div class="lbl">➕ زائد</div></div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            # Downloads
-            paths = result["paths"]
-            if paths:
-                dl1, dl2, _ = st.columns([1, 1, 2])
-                with dl1:
-                    with open(paths["html"], "rb") as f:
-                        st.download_button(
-                            "📄 HTML Report", f.read(),
-                            file_name=paths["html"].name,
-                            mime="text/html",
-                            use_container_width=True,
-                            key=f"html_{idx}"
-                        )
-                with dl2:
-                    with open(paths["excel"], "rb") as f:
-                        st.download_button(
-                            "📊 Excel", f.read(),
-                            file_name=paths["excel"].name,
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
-                            key=f"excel_{idx}"
-                        )
+                # Downloads
+                paths = result["paths"]
+                if paths:
+                    dl1, dl2, _ = st.columns([1, 1, 2])
+                    with dl1:
+                        with open(paths["html"], "rb") as f:
+                            st.download_button(
+                                "📄 HTML Report", f.read(),
+                                file_name=paths["html"].name,
+                                mime="text/html",
+                                use_container_width=True,
+                                key=f"html_{idx}"
+                            )
+                    with dl2:
+                        with open(paths["excel"], "rb") as f:
+                            st.download_button(
+                                "📊 Excel", f.read(),
+                                file_name=paths["excel"].name,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key=f"excel_{idx}"
+                            )
 
-            st.markdown("---")
+                st.markdown("---")
 
-            # ── Article viewer ───────────────────────────────────
-            st.markdown("#### 🔍 Article Comparison")
+                # ── Article viewer ───────────────────────────────────
+                st.markdown("#### 🔍 Article Comparison")
 
-            fc1, fc2, fc3 = st.columns([2, 2, 1])
-            with fc1:
-                status_opts = {
-                    "الكل": None,
-                    "✅ تطابق":       MatchStatus.MATCH,
-                    "⚠️ جزئي":        MatchStatus.NEAR_MATCH,
-                    "❌ تعارض":       MatchStatus.MISMATCH,
-                    "🔍 غائب":        MatchStatus.MISSING,
-                    "➕ زائد":        MatchStatus.EXTRA,
-                }
-                sel_status = st.selectbox(
-                    "تصفية:", list(status_opts.keys()),
-                    key=f"filter_{idx}"
+                fc1, fc2, fc3 = st.columns([2, 2, 1])
+                with fc1:
+                    status_opts = {
+                        "الكل": None,
+                        "✅ تطابق":       MatchStatus.MATCH,
+                        "⚠️ جزئي":        MatchStatus.NEAR_MATCH,
+                        "❌ تعارض":       MatchStatus.MISMATCH,
+                        "🔍 غائب":        MatchStatus.MISSING,
+                        "➕ زائد":        MatchStatus.EXTRA,
+                    }
+                    sel_status = st.selectbox(
+                        "تصفية:", list(status_opts.keys()),
+                        key=f"filter_{idx}"
+                    )
+                    filter_status = status_opts[sel_status]
+
+                with fc2:
+                    search = st.text_input(
+                        "بحث برقم المادة:", placeholder="مثال: 42",
+                        key=f"search_{idx}"
+                    )
+
+                with fc3:
+                    view = st.radio(
+                        "عرض:", ["↔ جانبي", "☰ قائمة"],
+                        key=f"view_{idx}", horizontal=True
+                    )
+
+                # Filter
+                arts = report.articles
+                if filter_status:
+                    arts = [a for a in arts if a.status == filter_status]
+                if search.strip():
+                    arts = [a for a in arts if search.strip() in a.article_number]
+
+                # Paginate
+                PAGE = 15
+                total_pages = max(1, (len(arts) + PAGE - 1) // PAGE)
+                page = st.number_input(
+                    f"صفحة (من {total_pages}):", min_value=1,
+                    max_value=total_pages, value=1, key=f"page_{idx}"
                 )
-                filter_status = status_opts[sel_status]
+                page_arts = arts[(page-1)*PAGE : page*PAGE]
+                st.caption(f"عرض {len(arts)} مادة")
 
-            with fc2:
-                search = st.text_input(
-                    "بحث برقم المادة:", placeholder="مثال: 42",
-                    key=f"search_{idx}"
-                )
-
-            with fc3:
-                view = st.radio(
-                    "عرض:", ["↔ جانبي", "☰ قائمة"],
-                    key=f"view_{idx}", horizontal=True
-                )
-
-            # Filter
-            arts = report.articles
-            if filter_status:
-                arts = [a for a in arts if a.status == filter_status]
-            if search.strip():
-                arts = [a for a in arts if search.strip() in a.article_number]
-
-            # Paginate
-            PAGE = 15
-            total_pages = max(1, (len(arts) + PAGE - 1) // PAGE)
-            page = st.number_input(
-                f"صفحة (من {total_pages}):", min_value=1,
-                max_value=total_pages, value=1, key=f"page_{idx}"
-            )
-            page_arts = arts[(page-1)*PAGE : page*PAGE]
-            st.caption(f"عرض {len(arts)} مادة")
-
-            # Render
-            if view == "↔ جانبي":
-                h1c, h2c = st.columns(2)
-                with h1c: st.markdown("**📘 المصدر الأول (JSON)**")
-                with h2c: st.markdown("**📗 المصدر الثاني (TXT)**")
-                for art in page_arts:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown(render_article_card(art, "json"), unsafe_allow_html=True)
-                    with c2:
-                        st.markdown(render_article_card(art, "txt"),  unsafe_allow_html=True)
-            else:
-                for art in page_arts:
-                    with st.expander(
-                        f"مادة {art.article_number}  |  "
-                        f"{STATUS_AR.get(art.status,'')}  |  "
-                        f"{'%.0f%%' % art.similarity_score if art.similarity_score > 0 else '—'}",
-                        expanded=art.status in (MatchStatus.MISMATCH, MatchStatus.NEAR_MATCH)
-                    ):
-                        a1, a2 = st.columns(2)
-                        with a1:
-                            st.markdown("**📘 JSON**")
-                            st.text_area("", art.json_text or "— غير متوفر —",
-                                height=140, key=f"j_{idx}_{art.article_number}", disabled=True)
-                        with a2:
-                            st.markdown("**📗 TXT**")
-                            st.text_area("", art.txt_text or "— غير متوفر —",
-                                height=140, key=f"t_{idx}_{art.article_number}", disabled=True)
-                        if art.diff_hint:
-                            st.caption(f"🔍 {art.diff_hint}")
+                # Render
+                if view == "↔ جانبي":
+                    h1c, h2c = st.columns(2)
+                    with h1c: st.markdown("**📘 المصدر الأول (JSON)**")
+                    with h2c: st.markdown("**📗 المصدر الثاني (TXT)**")
+                    for art in page_arts:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown(render_article_card(art, "json"), unsafe_allow_html=True)
+                        with c2:
+                            st.markdown(render_article_card(art, "txt"),  unsafe_allow_html=True)
+                else:
+                    for art in page_arts:
+                        with st.expander(
+                            f"مادة {art.article_number}  |  "
+                            f"{STATUS_AR.get(art.status,'')}  |  "
+                            f"{'%.0f%%' % art.similarity_score if art.similarity_score > 0 else '—'}",
+                            expanded=art.status in (MatchStatus.MISMATCH, MatchStatus.NEAR_MATCH)
+                        ):
+                            a1, a2 = st.columns(2)
+                            with a1:
+                                st.markdown("**📘 JSON**")
+                                st.text_area("", art.json_text or "— غير متوفر —",
+                                    height=140, key=f"j_{idx}_{art.article_number}", disabled=True)
+                            with a2:
+                                st.markdown("**📗 TXT**")
+                                st.text_area("", art.txt_text or "— غير متوفر —",
+                                    height=140, key=f"t_{idx}_{art.article_number}", disabled=True)
+                            if art.diff_hint:
+                                st.caption(f"🔍 {art.diff_hint}")
 
 else:
     # ── Empty state ──────────────────────────────────────────────
@@ -740,3 +771,305 @@ else:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+
+# ── Article Editor tab ────────────────────────────────────────
+if batch_results and tab_editor:
+  with tab_editor:
+
+    STATUS_LABELS_EDITOR = {
+        "MATCH":      "✅ Match",
+        "NEAR_MATCH": "⚠️ Near Match",
+        "MISMATCH":   "❌ Mismatch",
+        "MISSING":    "🔍 Missing",
+        "EXTRA":      "➕ Extra",
+    }
+
+    successful_results = [r for r in batch_results if r["status"] == "success"]
+
+    if not successful_results:
+        st.info("No successful comparisons to edit.")
+    else:
+        # ── Initialize edits for all laws ────────────────────────
+        for res in successful_results:
+            lid = res["report"].law_id
+            if lid not in st.session_state.edits_s1:
+                st.session_state.edits_s1[lid] = {}
+            if lid not in st.session_state.edits_s2:
+                st.session_state.edits_s2[lid] = {}
+
+        # ── Filter control ───────────────────────────────────────
+        fcol1, fcol2, fcol3 = st.columns([3, 2, 2])
+        with fcol1:
+            filter_opts = {
+                "All articles":       None,
+                "❌ Mismatch only":   "MISMATCH",
+                "⚠️ Near Match only": "NEAR_MATCH",
+                "🔍 Missing only":    "MISSING",
+                "➕ Extra only":      "EXTRA",
+                "✅ Match only":      "MATCH",
+            }
+            selected_filter = st.selectbox(
+                "Filter:", list(filter_opts.keys()),
+                key="editor_filter_select"
+            )
+            filter_status = filter_opts[selected_filter]
+
+        # ── Build flat navigation list across ALL laws ────────────
+        # Each entry: (law_id, law_name, law_num, law_year, article)
+        flat_list = []
+        for res in successful_results:
+            rpt = res["report"]
+            for art in rpt.articles:
+                if filter_status is None or art.status.value == filter_status:
+                    flat_list.append((
+                        rpt.law_id,
+                        rpt.law_name,
+                        rpt.law_number,
+                        rpt.year,
+                        art,
+                    ))
+
+        total = len(flat_list)
+
+        with fcol2:
+            st.metric("Total articles in view", total)
+
+        # Total unsaved edits across all laws
+        all_edits_count = sum(
+            len(st.session_state.edits_s1.get(r["report"].law_id, {})) +
+            len(st.session_state.edits_s2.get(r["report"].law_id, {}))
+            for r in successful_results
+        )
+        with fcol3:
+            if all_edits_count > 0:
+                st.markdown(
+                    f'<div style="padding:8px 12px;background:var(--color-background-warning);'
+                    f'border-radius:var(--border-radius-md);font-size:12px;'
+                    f'color:var(--color-text-warning);text-align:center;margin-top:6px">'
+                    f'🟡 {all_edits_count} unsaved edits</div>',
+                    unsafe_allow_html=True
+                )
+
+        if not flat_list:
+            st.info(f"No articles match the selected filter.")
+        else:
+            # ── Navigation bar ────────────────────────────────────
+            st.markdown("---")
+            nav1, nav2, nav3, nav4, nav5 = st.columns([1, 1, 3, 2, 1])
+
+            # Clamp index
+            if "ed_idx" not in st.session_state or st.session_state.ed_idx is None:
+                st.session_state.ed_idx = 0
+            ed_idx = max(0, min(int(st.session_state.ed_idx), total - 1))
+
+            with nav1:
+                if st.button("⏮ First", key="ed_first", use_container_width=True):
+                    st.session_state.ed_idx = 0
+                    st.rerun()
+
+            with nav2:
+                if st.button("← Prev", key="ed_prev", use_container_width=True):
+                    st.session_state.ed_idx = max(0, ed_idx - 1)
+                    st.rerun()
+
+            with nav3:
+                st.markdown(
+                    f'<div style="text-align:center;padding:6px;font-size:13px;">'
+                    f'Article <strong>{ed_idx + 1}</strong> of <strong>{total}</strong>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+            with nav4:
+                jump = st.text_input(
+                    "Jump to:", key="ed_jump",
+                    placeholder="article number",
+                    label_visibility="collapsed"
+                )
+                if jump.strip():
+                    # Find first match in flat list
+                    for fi, (_, _, _, _, fa) in enumerate(flat_list):
+                        if fa.article_number == jump.strip():
+                            st.session_state.ed_idx = fi
+                            st.rerun()
+                            break
+
+            with nav5:
+                if st.button("Next →", key="ed_next", use_container_width=True):
+                    st.session_state.ed_idx = min(total - 1, ed_idx + 1)
+                    st.rerun()
+
+            # ── Current article ───────────────────────────────────
+            law_id, law_name, law_num, law_year, art = flat_list[ed_idx]
+            art_num      = art.article_number
+            edits_s1     = st.session_state.edits_s1[law_id]
+            edits_s2     = st.session_state.edits_s2[law_id]
+            s1_edited    = art_num in edits_s1
+            s2_edited    = art_num in edits_s2
+            edit_dot     = " 🟡" if (s1_edited or s2_edited) else ""
+
+            badge_colors = {
+                "MATCH":      ("#d4edda", "#155724"),
+                "NEAR_MATCH": ("#fff3cd", "#856404"),
+                "MISMATCH":   ("#f8d7da", "#721c24"),
+                "MISSING":    ("#e2e3e5", "#383d41"),
+                "EXTRA":      ("#d1ecf1", "#0c5460"),
+            }
+            bg_c, txt_c = badge_colors.get(art.status.value, ("#e2e3e5", "#383d41"))
+            status_label = STATUS_LABELS_EDITOR.get(art.status.value, art.status.value)
+            score_txt    = f"Score: {art.similarity_score:.0f}%" if art.similarity_score > 0 else ""
+
+            # Law + article header
+            st.markdown(
+                f'<div style="background:var(--color-background-secondary);'
+                f'border-radius:var(--border-radius-md);padding:10px 14px;'
+                f'margin-bottom:12px;border:0.5px solid var(--color-border-tertiary)">'
+                f'<div style="font-size:11px;color:var(--color-text-secondary);margin-bottom:4px">'
+                f'📚 {law_name or "Law"} — {law_num}/{law_year}</div>'
+                f'<div style="display:flex;align-items:center;gap:10px;">'
+                f'<span style="font-size:1.05rem;font-weight:500">المادة {art_num}{edit_dot}</span>'
+                f'<span style="background:{bg_c};color:{txt_c};padding:2px 10px;'
+                f'border-radius:10px;font-size:12px;font-weight:500">{status_label}</span>'
+                + (f'<span style="font-size:12px;color:var(--color-text-secondary)">{score_txt}</span>'
+                   if score_txt else "")
+                + f'</div></div>',
+                unsafe_allow_html=True
+            )
+
+            # ── Side-by-side editors ──────────────────────────────
+            col_s1, col_s2 = st.columns(2)
+
+            with col_s1:
+                st.markdown("**📘 Source 1 — JSON (reference)**")
+                s1_original = art.json_text or ""
+                s1_current  = edits_s1.get(art_num, s1_original)
+
+                s1_new = st.text_area(
+                    label="s1",
+                    value=s1_current,
+                    height=300,
+                    key=f"ta_s1_{law_id}_{art_num}",
+                    label_visibility="collapsed"
+                )
+                # Track changes
+                if s1_new != s1_original:
+                    st.session_state.edits_s1[law_id][art_num] = s1_new
+                elif art_num in st.session_state.edits_s1[law_id] and s1_new == s1_original:
+                    del st.session_state.edits_s1[law_id][art_num]
+
+                if s1_edited:
+                    if st.button("↩ Reset Source 1", key=f"rst_s1_{law_id}_{art_num}",
+                                 use_container_width=True):
+                        if art_num in st.session_state.edits_s1[law_id]:
+                            del st.session_state.edits_s1[law_id][art_num]
+                        st.rerun()
+
+            with col_s2:
+                st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
+                s2_original = art.txt_text or ""
+                s2_current  = edits_s2.get(art_num, s2_original)
+
+                s2_new = st.text_area(
+                    label="s2",
+                    value=s2_current,
+                    height=300,
+                    key=f"ta_s2_{law_id}_{art_num}",
+                    label_visibility="collapsed"
+                )
+                # Track changes
+                if s2_new != s2_original:
+                    st.session_state.edits_s2[law_id][art_num] = s2_new
+                elif art_num in st.session_state.edits_s2[law_id] and s2_new == s2_original:
+                    del st.session_state.edits_s2[law_id][art_num]
+
+                if s2_edited:
+                    if st.button("↩ Reset Source 2", key=f"rst_s2_{law_id}_{art_num}",
+                                 use_container_width=True):
+                        if art_num in st.session_state.edits_s2[law_id]:
+                            del st.session_state.edits_s2[law_id][art_num]
+                        st.rerun()
+
+            # ── Save bar ──────────────────────────────────────────
+            st.markdown("---")
+
+            def build_edited_json(original_json_text, edits, is_source1=True):
+                import json as _j
+                data = _j.loads(original_json_text)
+                check = data[0] if isinstance(data, list) else data
+                keys  = list(check.keys()) if isinstance(check, dict) else []
+                is_fmt_b = len(keys) > 0 and all(
+                    str(k).strip().isdigit() for k in keys[:10]
+                )
+                if is_fmt_b:
+                    for num, txt in edits.items():
+                        if num in data:
+                            data[num] = txt
+                    return _j.dumps(data, ensure_ascii=False, indent=4)
+                else:
+                    law_data = data if not isinstance(data, list) else data[0]
+                    for a in law_data.get("Articles", []):
+                        num = str(a.get("article_number", ""))
+                        if num in edits:
+                            a["text"] = edits[num]
+                    if isinstance(data, list):
+                        data[0] = law_data
+                    return _j.dumps(data, ensure_ascii=False, indent=4)
+
+            # Per-law save section
+            st.markdown(f"**💾 Save edits for: {law_name or law_id}**")
+            sv1, sv2, sv3 = st.columns([2, 2, 1])
+
+            s1_law_edits = st.session_state.edits_s1.get(law_id, {})
+            s2_law_edits = st.session_state.edits_s2.get(law_id, {})
+            raw_j1       = st.session_state.raw_json1_map.get(law_id, "{}")
+
+            with sv1:
+                if s1_law_edits:
+                    try:
+                        out = build_edited_json(raw_j1, s1_law_edits, is_source1=True)
+                        st.download_button(
+                            f"💾 Source 1 ({len(s1_law_edits)} edits)",
+                            data=out.encode("utf-8"),
+                            file_name=f"edited_s1_{law_id}.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key=f"dl_s1_{law_id}"
+                        )
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+                else:
+                    st.caption("No Source 1 edits for this law")
+
+            with sv2:
+                if s2_law_edits:
+                    import json as _j2
+                    s2_out = {}
+                    for res in successful_results:
+                        if res["report"].law_id == law_id:
+                            for a in res["report"].articles:
+                                txt = s2_law_edits.get(
+                                    a.article_number, a.txt_text or ""
+                                )
+                                if txt:
+                                    s2_out[a.article_number] = txt
+                    out2 = _j2.dumps(s2_out, ensure_ascii=False, indent=4)
+                    st.download_button(
+                        f"💾 Source 2 ({len(s2_law_edits)} edits)",
+                        data=out2.encode("utf-8"),
+                        file_name=f"edited_s2_{law_id}.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key=f"dl_s2_{law_id}"
+                    )
+                else:
+                    st.caption("No Source 2 edits for this law")
+
+            with sv3:
+                law_edits_total = len(s1_law_edits) + len(s2_law_edits)
+                if law_edits_total > 0:
+                    if st.button("↩ Reset this law", use_container_width=True,
+                                 key=f"rst_law_{law_id}"):
+                        st.session_state.edits_s1[law_id] = {}
+                        st.session_state.edits_s2[law_id] = {}
+                        st.rerun()
