@@ -937,58 +937,152 @@ if batch_results and tab_editor:
                 unsafe_allow_html=True
             )
 
-            # ── Side-by-side editors ──────────────────────────────
-            col_s1, col_s2 = st.columns(2)
+            # ── View mode toggle ──────────────────────────────────
+            view_mode = st.radio(
+                "View mode:",
+                ["👁 Diff View", "✏️ Edit View"],
+                horizontal=True,
+                key=f"view_mode_{law_id}_{art_num}"
+            )
 
-            with col_s1:
-                st.markdown("**📘 Source 1 — JSON (reference)**")
-                s1_original = art.json_text or ""
-                s1_current  = edits_s1.get(art_num, s1_original)
+            s1_original = art.json_text or ""
+            s2_original = art.txt_text  or ""
+            s1_current  = edits_s1.get(art_num, s1_original)
+            s2_current  = edits_s2.get(art_num, s2_original)
 
-                s1_new = st.text_area(
-                    label="s1",
-                    value=s1_current,
-                    height=300,
-                    key=f"ta_s1_{law_id}_{art_num}",
-                    label_visibility="collapsed"
+            if view_mode == "👁 Diff View":
+                # ── Character-level diff ──────────────────────────
+                import difflib, html as _html
+
+                def build_diff_html(text_a: str, text_b: str):
+                    """
+                    Returns (html_a, html_b) with character-level highlights.
+                    text_a extra chars → red background in html_a
+                    text_b extra chars → green background in html_b
+                    """
+                    matcher = difflib.SequenceMatcher(
+                        None, text_a, text_b, autojunk=False
+                    )
+                    html_a = ""
+                    html_b = ""
+                    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+                        ca = _html.escape(text_a[i1:i2])
+                        cb = _html.escape(text_b[j1:j2])
+                        if op == "equal":
+                            html_a += ca
+                            html_b += cb
+                        elif op == "delete":
+                            # In S1 but not S2 → red in S1
+                            html_a += (
+                                f'<mark style="background:#f8d7da;color:#721c24;'
+                                f'border-radius:2px;padding:0 1px">{ca}</mark>'
+                            )
+                        elif op == "insert":
+                            # In S2 but not S1 → green in S2
+                            html_b += (
+                                f'<mark style="background:#d4edda;color:#155724;'
+                                f'border-radius:2px;padding:0 1px">{cb}</mark>'
+                            )
+                        elif op == "replace":
+                            # Different on both sides
+                            html_a += (
+                                f'<mark style="background:#f8d7da;color:#721c24;'
+                                f'border-radius:2px;padding:0 1px">{ca}</mark>'
+                            )
+                            html_b += (
+                                f'<mark style="background:#d4edda;color:#155724;'
+                                f'border-radius:2px;padding:0 1px">{cb}</mark>'
+                            )
+                    return html_a, html_b
+
+                html_s1, html_s2 = build_diff_html(s1_current, s2_current)
+
+                # Legend
+                st.markdown(
+                    '<div style="display:flex;gap:16px;margin-bottom:8px;font-size:12px">' +
+                    '<span><mark style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:3px">■</mark> In Source 1 only</span>' +
+                    '<span><mark style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:3px">■</mark> In Source 2 only</span>' +
+                    '</div>',
+                    unsafe_allow_html=True
                 )
-                # Track changes
-                if s1_new != s1_original:
-                    st.session_state.edits_s1[law_id][art_num] = s1_new
-                elif art_num in st.session_state.edits_s1[law_id] and s1_new == s1_original:
-                    del st.session_state.edits_s1[law_id][art_num]
 
-                if s1_edited:
-                    if st.button("↩ Reset Source 1", key=f"rst_s1_{law_id}_{art_num}",
-                                 use_container_width=True):
-                        if art_num in st.session_state.edits_s1[law_id]:
-                            del st.session_state.edits_s1[law_id][art_num]
-                        st.rerun()
+                col_d1, col_d2 = st.columns(2)
 
-            with col_s2:
-                st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
-                s2_original = art.txt_text or ""
-                s2_current  = edits_s2.get(art_num, s2_original)
-
-                s2_new = st.text_area(
-                    label="s2",
-                    value=s2_current,
-                    height=300,
-                    key=f"ta_s2_{law_id}_{art_num}",
-                    label_visibility="collapsed"
+                diff_style = (
+                    "background:var(--color-background-secondary);"
+                    "border:0.5px solid var(--color-border-tertiary);"
+                    "border-radius:var(--border-radius-md);"
+                    "padding:12px 14px;"
+                    "font-size:13px;"
+                    "line-height:1.9;"
+                    "direction:rtl;"
+                    "text-align:right;"
+                    "min-height:300px;"
+                    "white-space:pre-wrap;"
+                    "word-break:break-word;"
                 )
-                # Track changes
-                if s2_new != s2_original:
-                    st.session_state.edits_s2[law_id][art_num] = s2_new
-                elif art_num in st.session_state.edits_s2[law_id] and s2_new == s2_original:
-                    del st.session_state.edits_s2[law_id][art_num]
 
-                if s2_edited:
-                    if st.button("↩ Reset Source 2", key=f"rst_s2_{law_id}_{art_num}",
-                                 use_container_width=True):
-                        if art_num in st.session_state.edits_s2[law_id]:
-                            del st.session_state.edits_s2[law_id][art_num]
-                        st.rerun()
+                with col_d1:
+                    st.markdown("**📘 Source 1 — JSON (reference)**")
+                    st.markdown(
+                        f'<div style="{diff_style}">{html_s1}</div>',
+                        unsafe_allow_html=True
+                    )
+
+                with col_d2:
+                    st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
+                    st.markdown(
+                        f'<div style="{diff_style}">{html_s2}</div>',
+                        unsafe_allow_html=True
+                    )
+
+            else:
+                # ── Edit View ─────────────────────────────────────
+                col_s1, col_s2 = st.columns(2)
+
+                with col_s1:
+                    st.markdown("**📘 Source 1 — JSON (reference)**")
+                    s1_new = st.text_area(
+                        label="s1",
+                        value=s1_current,
+                        height=300,
+                        key=f"ta_s1_{law_id}_{art_num}",
+                        label_visibility="collapsed"
+                    )
+                    if s1_new != s1_original:
+                        st.session_state.edits_s1[law_id][art_num] = s1_new
+                    elif art_num in st.session_state.edits_s1[law_id] and s1_new == s1_original:
+                        del st.session_state.edits_s1[law_id][art_num]
+
+                    if s1_edited:
+                        if st.button("↩ Reset Source 1",
+                                     key=f"rst_s1_{law_id}_{art_num}",
+                                     use_container_width=True):
+                            if art_num in st.session_state.edits_s1[law_id]:
+                                del st.session_state.edits_s1[law_id][art_num]
+                            st.rerun()
+
+                with col_s2:
+                    st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
+                    s2_new = st.text_area(
+                        label="s2",
+                        value=s2_current,
+                        height=300,
+                        key=f"ta_s2_{law_id}_{art_num}",
+                        label_visibility="collapsed"
+                    )
+                    if s2_new != s2_original:
+                        st.session_state.edits_s2[law_id][art_num] = s2_new
+                    elif art_num in st.session_state.edits_s2[law_id] and s2_new == s2_original:
+                        del st.session_state.edits_s2[law_id][art_num]
+
+                    if s2_edited:
+                        if st.button("↩ Reset Source 2",
+                                     key=f"rst_s2_{law_id}_{art_num}",
+                                     use_container_width=True):
+                            if art_num in st.session_state.edits_s2[law_id]:
+                                del st.session_state.edits_s2[law_id][art_num]
+                            st.rerun()
 
             # ── Save bar ──────────────────────────────────────────
             st.markdown("---")
@@ -1072,4 +1166,4 @@ if batch_results and tab_editor:
                                  key=f"rst_law_{law_id}"):
                         st.session_state.edits_s1[law_id] = {}
                         st.session_state.edits_s2[law_id] = {}
-                        st.rerun() 
+                        st.rerun()
