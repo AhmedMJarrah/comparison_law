@@ -233,7 +233,7 @@ def _strip_article_header(text: str, article_number: str) -> str:
         r"^[\s\-–]*المادة[\s\-–]*[([]?"
         + re.escape(num_converted)
         + r"[)\]]?[\s\-–]*",
-        re.UNICODE
+        re.UNICODE | re.MULTILINE
     )
 
     cleaned = pattern.sub("", text_converted).strip()
@@ -250,24 +250,30 @@ def _clean_format_b_text(text: str) -> str:
     - Remove table-of-contents lines (contain | characters)
     - Collapse excessive whitespace
     """
-    lines  = text.split("\n")
-    cleaned = []
+    lines         = text.split("\n")
+    cleaned        = []
+    past_header    = False   # True once we've seen an article header (المادة N)
+
     for line in lines:
         s = line.strip()
         if not s:
             cleaned.append("")
             continue
-        # Skip page break markers
+        # Skip page break markers always
         if re.match(r"^-{2,}\s*Page\s*\d+\s*-{2,}$", s, re.IGNORECASE):
             continue
-        # Skip table of contents lines (contain multiple | separators)
-        if s.count("|") >= 2:
+        # Skip pure page number lines always
+        if re.match(r"^\d{1,4}$", s):
             continue
-        # Skip pure markdown headings that are section titles (not article headers)
+        # Skip pure markdown section headings (not article headers) always
         if re.match(r"^#{1,6}\s+[^0-9]", s) and "المادة" not in s:
             continue
-        # Skip pure page number lines
-        if re.match(r"^\d{1,4}$", s):
+        # Detect article header — once we pass it, tables become content
+        if re.search(r"المادة\s*[([]?\s*\d+", s):
+            past_header = True
+        # Skip pipe-separated lines ONLY if we haven't reached the article header yet
+        # (those are TOC lines). After the header, pipes are table content — keep them.
+        if s.count("|") >= 2 and not past_header:
             continue
         cleaned.append(line)
     result = re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned))
@@ -345,21 +351,31 @@ def _is_article_chunk(text: str, key: str) -> bool:
     t = _cv(text.strip())
 
     # Check meaningful content after stripping noise
-    lines = t.split("\n")
-    meaningful = []
-    toc_lines  = 0
+    lines        = t.split("\n")
+    meaningful   = []
+    toc_lines    = 0
+    past_header  = False   # True once we pass an article header
+
     for line in lines:
         s = line.strip()
         if not s:
             continue
         if re.match(r"^-{2,}\s*Page\s*\d+", s, re.IGNORECASE):
             continue
-        if s.count("|") >= 2:
-            toc_lines += 1
-            continue
         if re.match(r"^\d{1,4}$", s):
             continue
         if re.match(r"^#", s) and "المادة" not in s:
+            continue
+        # Detect article header
+        if re.search(r"المادة\s*[([]?\s*\d+", s):
+            past_header = True
+        # Count pipe lines as TOC only before the article header
+        if s.count("|") >= 2:
+            if not past_header:
+                toc_lines += 1
+            else:
+                # Post-header table → treat as meaningful content
+                meaningful.append(s)
             continue
         meaningful.append(s)
 
@@ -398,9 +414,9 @@ def _extract_article_after_toc(text: str, expected_num: str) -> str:
         if re.search(r"قانون\s+(?:معدل\s+)?رقم\s*[([]?\s*\d+", s):
             start_idx = i
             break
-        # Article header line matching expected number
+        # Article header line matching expected number (dash optional)
         art_pattern = re.compile(
-            r"المادة\s*[([]?\s*" + re.escape(expected_num) + r"\s*[)\]]?\s*[-–]"
+            r"المادة\s*[([]?\s*" + re.escape(expected_num) + r"\s*[)\]]?\s*[-–]?"
         )
         if art_pattern.search(s):
             start_idx = i
@@ -414,7 +430,7 @@ def _extract_article_after_toc(text: str, expected_num: str) -> str:
     art_start_idx = None
     num_conv      = convert_numerals(expected_num)
     art_pattern   = re.compile(
-        r"المادة\s*[([]?\s*" + re.escape(num_conv) + r"\s*[)\]]?\s*[-–]"
+        r"المادة\s*[([]?\s*" + re.escape(num_conv) + r"\s*[)\]]?\s*[-–]?"
     )
     for i, line in enumerate(lines):
         if art_pattern.search(convert_numerals(line)):
