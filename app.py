@@ -315,6 +315,7 @@ with st.sidebar:
     mode = st.radio(
         "Select source 2 type:",
         ["📄 JSON vs TXT", "📋 JSON vs JSON"],
+        index=1,
         key="mode_selector",
         horizontal=False,
     )
@@ -941,6 +942,7 @@ if batch_results and tab_editor:
             view_mode = st.radio(
                 "View mode:",
                 ["👁 Diff View", "✏️ Edit View"],
+                index=1,
                 horizontal=True,
                 key=f"view_mode_{law_id}_{art_num}"
             )
