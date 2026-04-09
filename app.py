@@ -292,6 +292,10 @@ if st.session_state.edits_s1 is None:
     st.session_state.edits_s1 = {}
 if st.session_state.edits_s2 is None:
     st.session_state.edits_s2 = {}
+# Staging area: holds unsaved text per article before user clicks Save Article
+# Format: {law_id: {art_num: {"s1": text, "s2": text}}}
+if "staging" not in st.session_state or st.session_state.staging is None:
+    st.session_state.staging = {}
 if st.session_state.raw_json1_map is None:
     st.session_state.raw_json1_map = {}   # law_id → original json1 text
 if st.session_state.raw_json2_map is None:
@@ -1040,53 +1044,92 @@ if batch_results and tab_editor:
 
             else:
                 # ── Edit View ─────────────────────────────────────
+                # Staging: unsaved text lives here until user clicks Save Article
+                if law_id not in st.session_state.staging:
+                    st.session_state.staging[law_id] = {}
+                if art_num not in st.session_state.staging[law_id]:
+                    st.session_state.staging[law_id][art_num] = {
+                        "s1": s1_current,
+                        "s2": s2_current,
+                    }
+
+                stage = st.session_state.staging[law_id][art_num]
+
                 col_s1, col_s2 = st.columns(2)
 
                 with col_s1:
                     st.markdown("**📘 Source 1 — JSON (reference)**")
-                    s1_new = st.text_area(
+                    s1_draft = st.text_area(
                         label="s1",
-                        value=s1_current,
+                        value=stage["s1"],
                         height=300,
                         key=f"ta_s1_{law_id}_{art_num}",
                         label_visibility="collapsed"
                     )
-                    if s1_new != s1_original:
-                        st.session_state.edits_s1[law_id][art_num] = s1_new
-                    elif art_num in st.session_state.edits_s1[law_id] and s1_new == s1_original:
-                        del st.session_state.edits_s1[law_id][art_num]
-
-                    if s1_edited:
-                        if st.button("↩ Reset Source 1",
-                                     key=f"rst_s1_{law_id}_{art_num}",
-                                     use_container_width=True):
-                            if art_num in st.session_state.edits_s1[law_id]:
-                                del st.session_state.edits_s1[law_id][art_num]
-                            st.rerun()
+                    # Update staging on every keystroke (not saved yet)
+                    st.session_state.staging[law_id][art_num]["s1"] = s1_draft
 
                 with col_s2:
                     st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
-                    s2_new = st.text_area(
+                    s2_draft = st.text_area(
                         label="s2",
-                        value=s2_current,
+                        value=stage["s2"],
                         height=300,
                         key=f"ta_s2_{law_id}_{art_num}",
                         label_visibility="collapsed"
                     )
-                    if s2_new != s2_original:
-                        st.session_state.edits_s2[law_id][art_num] = s2_new
-                    elif art_num in st.session_state.edits_s2[law_id] and s2_new == s2_original:
-                        del st.session_state.edits_s2[law_id][art_num]
+                    # Update staging on every keystroke (not saved yet)
+                    st.session_state.staging[law_id][art_num]["s2"] = s2_draft
 
-                    if s2_edited:
-                        if st.button("↩ Reset Source 2",
-                                     key=f"rst_s2_{law_id}_{art_num}",
-                                     use_container_width=True):
-                            if art_num in st.session_state.edits_s2[law_id]:
-                                del st.session_state.edits_s2[law_id][art_num]
-                            st.rerun()
+                # ── Article-level save / reset buttons ────────────
+                s1_draft = st.session_state.staging[law_id][art_num]["s1"]
+                s2_draft = st.session_state.staging[law_id][art_num]["s2"]
+                s1_changed = s1_draft != s1_original
+                s2_changed = s2_draft != s2_original
+                any_changed = s1_changed or s2_changed
 
-            # ── Save bar ──────────────────────────────────────────
+                btn_save, btn_reset, btn_info = st.columns([2, 1, 3])
+
+                with btn_save:
+                    save_clicked = st.button(
+                        "💾 Save Article",
+                        key=f"save_art_{law_id}_{art_num}",
+                        type="primary",
+                        use_container_width=True,
+                        disabled=not any_changed,
+                    )
+                    if save_clicked:
+                        if s1_changed:
+                            st.session_state.edits_s1[law_id][art_num] = s1_draft
+                        elif art_num in st.session_state.edits_s1[law_id]:
+                            del st.session_state.edits_s1[law_id][art_num]
+                        if s2_changed:
+                            st.session_state.edits_s2[law_id][art_num] = s2_draft
+                        elif art_num in st.session_state.edits_s2[law_id]:
+                            del st.session_state.edits_s2[law_id][art_num]
+                        st.success(f"✅ Article {art_num} saved!")
+
+                with btn_reset:
+                    if st.button(
+                        "↩ Reset",
+                        key=f"rst_art_{law_id}_{art_num}",
+                        use_container_width=True,
+                        disabled=not any_changed,
+                    ):
+                        # Revert staging to last saved (or original)
+                        st.session_state.staging[law_id][art_num] = {
+                            "s1": edits_s1.get(art_num, s1_original),
+                            "s2": edits_s2.get(art_num, s2_original),
+                        }
+                        st.rerun()
+
+                with btn_info:
+                    if any_changed and not save_clicked:
+                        st.warning("⚠️ Unsaved changes — click Save Article")
+                    elif s1_edited or s2_edited:
+                        st.info(f"✅ Article {art_num} has saved edits")
+
+            # ── Save File bar (bottom) ────────────────────────────
             st.markdown("---")
 
             def build_edited_json(original_json_text, edits, is_source1=True):
@@ -1112,33 +1155,55 @@ if batch_results and tab_editor:
                         data[0] = law_data
                     return _j.dumps(data, ensure_ascii=False, indent=4)
 
-            # Per-law save section
-            st.markdown(f"**💾 Save edits for: {law_name or law_id}**")
-            sv1, sv2, sv3 = st.columns([2, 2, 1])
+            s1_law_edits  = st.session_state.edits_s1.get(law_id, {})
+            s2_law_edits  = st.session_state.edits_s2.get(law_id, {})
+            raw_j1        = st.session_state.raw_json1_map.get(law_id, "{}")
+            total_s1_edits = len(s1_law_edits)
+            total_s2_edits = len(s2_law_edits)
+            total_all      = total_s1_edits + total_s2_edits
 
-            s1_law_edits = st.session_state.edits_s1.get(law_id, {})
-            s2_law_edits = st.session_state.edits_s2.get(law_id, {})
-            raw_j1       = st.session_state.raw_json1_map.get(law_id, "{}")
+            # Summary line
+            if total_all > 0:
+                st.markdown(
+                    f'<div style="background:var(--color-background-info);'
+                    f'border-radius:var(--border-radius-md);padding:8px 14px;'
+                    f'font-size:13px;color:var(--color-text-info);margin-bottom:10px">'
+                    f'📋 {total_all} article edits saved for {law_name or law_id} — '
+                    f'Source 1: {total_s1_edits} | Source 2: {total_s2_edits}'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            else:
+                st.caption("No saved article edits yet — use Save Article above to commit edits.")
+
+            sv1, sv2, sv3 = st.columns([3, 3, 1])
 
             with sv1:
-                if s1_law_edits:
+                if total_s1_edits > 0:
                     try:
                         out = build_edited_json(raw_j1, s1_law_edits, is_source1=True)
                         st.download_button(
-                            f"💾 Source 1 ({len(s1_law_edits)} edits)",
+                            f"📥 Save Source 1 file ({total_s1_edits} articles edited)",
                             data=out.encode("utf-8"),
                             file_name=f"edited_s1_{law_id}.json",
                             mime="application/json",
                             use_container_width=True,
+                            type="primary",
                             key=f"dl_s1_{law_id}"
                         )
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error building file: {e}")
                 else:
-                    st.caption("No Source 1 edits for this law")
+                    st.button(
+                        "📥 Save Source 1 file",
+                        disabled=True,
+                        use_container_width=True,
+                        key=f"dl_s1_disabled_{law_id}",
+                        help="No saved edits for Source 1 yet"
+                    )
 
             with sv2:
-                if s2_law_edits:
+                if total_s2_edits > 0:
                     import json as _j2
                     s2_out = {}
                     for res in successful_results:
@@ -1151,21 +1216,31 @@ if batch_results and tab_editor:
                                     s2_out[a.article_number] = txt
                     out2 = _j2.dumps(s2_out, ensure_ascii=False, indent=4)
                     st.download_button(
-                        f"💾 Source 2 ({len(s2_law_edits)} edits)",
+                        f"📥 Save Source 2 file ({total_s2_edits} articles edited)",
                         data=out2.encode("utf-8"),
                         file_name=f"edited_s2_{law_id}.json",
                         mime="application/json",
                         use_container_width=True,
+                        type="primary",
                         key=f"dl_s2_{law_id}"
                     )
                 else:
-                    st.caption("No Source 2 edits for this law")
+                    st.button(
+                        "📥 Save Source 2 file",
+                        disabled=True,
+                        use_container_width=True,
+                        key=f"dl_s2_disabled_{law_id}",
+                        help="No saved edits for Source 2 yet"
+                    )
 
             with sv3:
-                law_edits_total = len(s1_law_edits) + len(s2_law_edits)
-                if law_edits_total > 0:
-                    if st.button("↩ Reset this law", use_container_width=True,
-                                 key=f"rst_law_{law_id}"):
+                if total_all > 0:
+                    if st.button(
+                        "↩ Reset all",
+                        use_container_width=True,
+                        key=f"rst_law_{law_id}"
+                    ):
                         st.session_state.edits_s1[law_id] = {}
                         st.session_state.edits_s2[law_id] = {}
+                        st.session_state.staging[law_id]  = {}
                         st.rerun()
