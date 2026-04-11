@@ -946,7 +946,7 @@ if batch_results and tab_editor:
             view_mode = st.radio(
                 "View mode:",
                 ["👁 Diff View", "✏️ Edit View"],
-                index=1,
+                index=0,
                 horizontal=True,
                 key=f"view_mode_{law_id}_{art_num}"
             )
@@ -1006,8 +1006,8 @@ if batch_results and tab_editor:
                 # Legend
                 st.markdown(
                     '<div style="display:flex;gap:16px;margin-bottom:8px;font-size:12px">' +
-                    '<span><mark style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:3px">■</mark> In Source 1 only</span>' +
-                    '<span><mark style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:3px">■</mark> In Source 2 only</span>' +
+                    '<span><mark style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:3px">■</mark> في قسطاس فقط</span>' +
+                    '<span><mark style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:3px">■</mark> في الجريدة الرسمية فقط</span>' +
                     '</div>',
                     unsafe_allow_html=True
                 )
@@ -1029,105 +1029,80 @@ if batch_results and tab_editor:
                 )
 
                 with col_d1:
-                    st.markdown("**📘 Source 1 — JSON (reference)**")
+                    st.markdown("**📘 قسطاس**")
                     st.markdown(
                         f'<div style="{diff_style}">{html_s1}</div>',
                         unsafe_allow_html=True
                     )
 
                 with col_d2:
-                    st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
+                    st.markdown("**📗 الجريدة الرسمية**")
                     st.markdown(
                         f'<div style="{diff_style}">{html_s2}</div>',
                         unsafe_allow_html=True
                     )
 
             else:
-                # ── Edit View ─────────────────────────────────────
-                # Staging: unsaved text lives here until user clicks Save Article
-                if law_id not in st.session_state.staging:
-                    st.session_state.staging[law_id] = {}
-                if art_num not in st.session_state.staging[law_id]:
-                    st.session_state.staging[law_id][art_num] = {
-                        "s1": s1_current,
-                        "s2": s2_current,
-                    }
-
-                stage = st.session_state.staging[law_id][art_num]
-
+                # ── Edit View (auto-save) ──────────────────────────
+                # Every keystroke is saved automatically to session_state.
+                # No manual "Save Article" needed — just edit freely.
+                # The "Save File" button at the bottom downloads the result.
                 col_s1, col_s2 = st.columns(2)
 
                 with col_s1:
-                    st.markdown("**📘 Source 1 — JSON (reference)**")
-                    s1_draft = st.text_area(
+                    st.markdown("**📘 قسطاس**")
+                    s1_new = st.text_area(
                         label="s1",
-                        value=stage["s1"],
+                        value=s1_current,
                         height=300,
                         key=f"ta_s1_{law_id}_{art_num}",
                         label_visibility="collapsed"
                     )
-                    # Update staging on every keystroke (not saved yet)
-                    st.session_state.staging[law_id][art_num]["s1"] = s1_draft
+                    # Auto-save: commit to edits on every change
+                    if s1_new != s1_original:
+                        st.session_state.edits_s1[law_id][art_num] = s1_new
+                    elif art_num in st.session_state.edits_s1[law_id]:
+                        del st.session_state.edits_s1[law_id][art_num]
 
                 with col_s2:
-                    st.markdown("**📗 Source 2 — JSON/TXT (OCR)**")
-                    s2_draft = st.text_area(
+                    st.markdown("**📗 الجريدة الرسمية**")
+                    s2_new = st.text_area(
                         label="s2",
-                        value=stage["s2"],
+                        value=s2_current,
                         height=300,
                         key=f"ta_s2_{law_id}_{art_num}",
                         label_visibility="collapsed"
                     )
-                    # Update staging on every keystroke (not saved yet)
-                    st.session_state.staging[law_id][art_num]["s2"] = s2_draft
+                    # Auto-save: commit to edits on every change
+                    if s2_new != s2_original:
+                        st.session_state.edits_s2[law_id][art_num] = s2_new
+                    elif art_num in st.session_state.edits_s2[law_id]:
+                        del st.session_state.edits_s2[law_id][art_num]
 
-                # ── Article-level save / reset buttons ────────────
-                s1_draft = st.session_state.staging[law_id][art_num]["s1"]
-                s2_draft = st.session_state.staging[law_id][art_num]["s2"]
-                s1_changed = s1_draft != s1_original
-                s2_changed = s2_draft != s2_original
-                any_changed = s1_changed or s2_changed
+                # ── Change notification bar ────────────────────────
+                s1_modified = s1_new != s1_original
+                s2_modified = s2_new != s2_original
 
-                btn_save, btn_reset, btn_info = st.columns([2, 1, 3])
-
-                with btn_save:
-                    save_clicked = st.button(
-                        "💾 Save Article",
-                        key=f"save_art_{law_id}_{art_num}",
-                        type="primary",
-                        use_container_width=True,
-                        disabled=not any_changed,
+                if s1_modified or s2_modified:
+                    changed_sides = []
+                    if s1_modified: changed_sides.append("قسطاس")
+                    if s2_modified: changed_sides.append("الجريدة الرسمية")
+                    st.markdown(
+                        f'<div style="background:var(--color-background-warning);'
+                        f'border-radius:var(--border-radius-md);padding:8px 14px;'
+                        f'font-size:13px;color:var(--color-text-warning);margin-top:6px">'
+                        f'🟡 تم تعديل المادة {art_num} في: {" و ".join(changed_sides)} — '
+                        f'سيتم تضمين التعديل تلقائياً عند حفظ الملف</div>',
+                        unsafe_allow_html=True
                     )
-                    if save_clicked:
-                        if s1_changed:
-                            st.session_state.edits_s1[law_id][art_num] = s1_draft
-                        elif art_num in st.session_state.edits_s1[law_id]:
-                            del st.session_state.edits_s1[law_id][art_num]
-                        if s2_changed:
-                            st.session_state.edits_s2[law_id][art_num] = s2_draft
-                        elif art_num in st.session_state.edits_s2[law_id]:
-                            del st.session_state.edits_s2[law_id][art_num]
-                        st.success(f"✅ Article {art_num} saved!")
-
-                with btn_reset:
-                    if st.button(
-                        "↩ Reset",
-                        key=f"rst_art_{law_id}_{art_num}",
-                        use_container_width=True,
-                        disabled=not any_changed,
-                    ):
-                        # Revert staging to last saved (or original)
-                        st.session_state.staging[law_id][art_num] = {
-                            "s1": edits_s1.get(art_num, s1_original),
-                            "s2": edits_s2.get(art_num, s2_original),
-                        }
-                        st.rerun()
-
-                with btn_info:
-                    if any_changed and not save_clicked:
-                        st.warning("⚠️ Unsaved changes — click Save Article")
-                    elif s1_edited or s2_edited:
-                        st.info(f"✅ Article {art_num} has saved edits")
+                elif s1_edited or s2_edited:
+                    st.markdown(
+                        f'<div style="background:var(--color-background-success);'
+                        f'border-radius:var(--border-radius-md);padding:8px 14px;'
+                        f'font-size:13px;color:var(--color-text-success);margin-top:6px">'
+                        f'✅ المادة {art_num} معدّلة ومحفوظة — اضغط حفظ الملف للتنزيل</div>',
+                        unsafe_allow_html=True
+                    )
 
             # ── Save File bar (bottom) ────────────────────────────
             st.markdown("---")
@@ -1168,13 +1143,13 @@ if batch_results and tab_editor:
                     f'<div style="background:var(--color-background-info);'
                     f'border-radius:var(--border-radius-md);padding:8px 14px;'
                     f'font-size:13px;color:var(--color-text-info);margin-bottom:10px">'
-                    f'📋 {total_all} article edits saved for {law_name or law_id} — '
-                    f'Source 1: {total_s1_edits} | Source 2: {total_s2_edits}'
+                    f'📋 {total_all} تعديل محفوظ لـ {law_name or law_id} — '
+                    f'قسطاس: {total_s1_edits} | الجريدة الرسمية: {total_s2_edits}'
                     f'</div>',
                     unsafe_allow_html=True
                 )
             else:
-                st.caption("No saved article edits yet — use Save Article above to commit edits.")
+                st.caption("لا توجد تعديلات بعد — عدّل النصوص وسيتم حفظها تلقائياً")
 
             sv1, sv2, sv3 = st.columns([3, 3, 1])
 
@@ -1183,7 +1158,7 @@ if batch_results and tab_editor:
                     try:
                         out = build_edited_json(raw_j1, s1_law_edits, is_source1=True)
                         st.download_button(
-                            f"📥 Save Source 1 file ({total_s1_edits} articles edited)",
+                            f"📥 حفظ ملف قسطاس ({total_s1_edits} مادة معدّلة)",
                             data=out.encode("utf-8"),
                             file_name=f"edited_s1_{law_id}.json",
                             mime="application/json",
@@ -1195,11 +1170,11 @@ if batch_results and tab_editor:
                         st.error(f"Error building file: {e}")
                 else:
                     st.button(
-                        "📥 Save Source 1 file",
+                        "📥 حفظ ملف قسطاس",
                         disabled=True,
                         use_container_width=True,
                         key=f"dl_s1_disabled_{law_id}",
-                        help="No saved edits for Source 1 yet"
+                        help="لا توجد تعديلات محفوظة لقسطاس بعد"
                     )
 
             with sv2:
@@ -1216,7 +1191,7 @@ if batch_results and tab_editor:
                                     s2_out[a.article_number] = txt
                     out2 = _j2.dumps(s2_out, ensure_ascii=False, indent=4)
                     st.download_button(
-                        f"📥 Save Source 2 file ({total_s2_edits} articles edited)",
+                        f"📥 حفظ ملف الجريدة الرسمية ({total_s2_edits} مادة معدّلة)",
                         data=out2.encode("utf-8"),
                         file_name=f"edited_s2_{law_id}.json",
                         mime="application/json",
@@ -1226,17 +1201,17 @@ if batch_results and tab_editor:
                     )
                 else:
                     st.button(
-                        "📥 Save Source 2 file",
+                        "📥 حفظ ملف الجريدة الرسمية",
                         disabled=True,
                         use_container_width=True,
                         key=f"dl_s2_disabled_{law_id}",
-                        help="No saved edits for Source 2 yet"
+                        help="لا توجد تعديلات محفوظة للجريدة الرسمية بعد"
                     )
 
             with sv3:
                 if total_all > 0:
                     if st.button(
-                        "↩ Reset all",
+                        "↩ إعادة تعيين الكل",
                         use_container_width=True,
                         key=f"rst_law_{law_id}"
                     ):
