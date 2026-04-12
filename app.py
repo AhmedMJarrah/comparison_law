@@ -1014,7 +1014,7 @@ if batch_results and tab_editor:
                 # Legend
                 st.markdown(
                     '<div style="display:flex;gap:16px;margin-bottom:8px;font-size:12px">' +
-                    '<span><mark style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:3px">■</mark> في قسطاس فقط</span>' +
+                    '<span><mark style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:3px">■</mark> في مصادر أخرى فقط</span>' +
                     '<span><mark style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:3px">■</mark> في الجريدة الرسمية فقط</span>' +
                     '</div>',
                     unsafe_allow_html=True
@@ -1037,7 +1037,7 @@ if batch_results and tab_editor:
                 )
 
                 with col_d1:
-                    st.markdown("**📘 قسطاس**")
+                    st.markdown("**📘 مصادر أخرى**")
                     st.markdown(
                         f'<div style="{diff_style}">{html_s1}</div>',
                         unsafe_allow_html=True
@@ -1058,7 +1058,7 @@ if batch_results and tab_editor:
                 col_s1, col_s2 = st.columns(2)
 
                 with col_s1:
-                    st.markdown("**📘 قسطاس**")
+                    st.markdown("**📘 مصادر أخرى**")
                     s1_new = st.text_area(
                         label="s1",
                         value=s1_current,
@@ -1093,7 +1093,7 @@ if batch_results and tab_editor:
 
                 if s1_modified or s2_modified:
                     changed_sides = []
-                    if s1_modified: changed_sides.append("قسطاس")
+                    if s1_modified: changed_sides.append("مصادر أخرى")
                     if s2_modified: changed_sides.append("الجريدة الرسمية")
                     st.markdown(
                         f'<div style="background:var(--color-background-warning);'
@@ -1152,7 +1152,7 @@ if batch_results and tab_editor:
                     f'border-radius:var(--border-radius-md);padding:8px 14px;'
                     f'font-size:13px;color:var(--color-text-info);margin-bottom:10px">'
                     f'📋 {total_all} تعديل محفوظ لـ {law_name or law_id} — '
-                    f'قسطاس: {total_s1_edits} | الجريدة الرسمية: {total_s2_edits}'
+                    f'مصادر أخرى: {total_s1_edits} | الجريدة الرسمية: {total_s2_edits}'
                     f'</div>',
                     unsafe_allow_html=True
                 )
@@ -1169,7 +1169,7 @@ if batch_results and tab_editor:
                             law_id, {}
                         ).get("s1", f"edited_s1_{law_id}.json")
                         st.download_button(
-                            f"📥 حفظ ملف قسطاس ({total_s1_edits} مادة معدّلة)",
+                            f"📥 حفظ ملف المصادر الأخرى ({total_s1_edits} مادة معدّلة)",
                             data=out.encode("utf-8"),
                             file_name=s1_fname,
                             mime="application/json",
@@ -1181,11 +1181,11 @@ if batch_results and tab_editor:
                         st.error(f"Error building file: {e}")
                 else:
                     st.button(
-                        "📥 حفظ ملف قسطاس",
+                        "📥 حفظ ملف المصادر الأخرى",
                         disabled=True,
                         use_container_width=True,
                         key=f"dl_s1_disabled_{law_id}",
-                        help="لا توجد تعديلات محفوظة لقسطاس بعد"
+                        help="لا توجد تعديلات محفوظة للمصادر الاخرى بعد"
                     )
 
             with sv2:
