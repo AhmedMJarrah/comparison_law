@@ -300,6 +300,9 @@ if st.session_state.raw_json1_map is None:
     st.session_state.raw_json1_map = {}   # law_id → original json1 text
 if st.session_state.raw_json2_map is None:
     st.session_state.raw_json2_map = {}   # law_id → original json2 text
+# Stores original filenames: law_id → {"s1": "filename.json", "s2": "filename.json"}
+if "original_filenames" not in st.session_state or st.session_state.original_filenames is None:
+    st.session_state.original_filenames = {}
 
 
 # ── Header ───────────────────────────────────────────────────────
@@ -553,16 +556,21 @@ if run_btn and ready:
     status_area.empty()
     st.session_state.batch_results = batch_results
 
-    # Store raw JSON texts for editor (needed to rebuild JSON on save)
-    # key = law_id, value = original raw JSON text
-    raw_j1 = {}
-    raw_j2 = {}
+    # Store raw JSON texts and original filenames for editor
+    raw_j1      = {}
+    raw_j2      = {}
+    orig_fnames = {}
     for r in batch_results:
         if r["status"] == "success":
             lid = r["report"].law_id
             raw_j1[lid] = json_text   # Source 1 always same JSON
-    st.session_state.raw_json1_map = raw_j1
-    st.session_state.raw_json2_map = raw_j2
+            orig_fnames[lid] = {
+                "s1": json_file.name if json_file else f"source1_{lid}.json",
+                "s2": r.get("file_name", f"source2_{lid}.json"),
+            }
+    st.session_state.raw_json1_map      = raw_j1
+    st.session_state.raw_json2_map      = raw_j2
+    st.session_state.original_filenames = orig_fnames
 
     ok_count = len([r for r in batch_results if r["status"] == "success"])
     mode_label = "JSON vs JSON" if is_json_mode else "JSON vs TXT"
@@ -1157,10 +1165,13 @@ if batch_results and tab_editor:
                 if total_s1_edits > 0:
                     try:
                         out = build_edited_json(raw_j1, s1_law_edits, is_source1=True)
+                        s1_fname = st.session_state.original_filenames.get(
+                            law_id, {}
+                        ).get("s1", f"edited_s1_{law_id}.json")
                         st.download_button(
                             f"📥 حفظ ملف قسطاس ({total_s1_edits} مادة معدّلة)",
                             data=out.encode("utf-8"),
-                            file_name=f"edited_s1_{law_id}.json",
+                            file_name=s1_fname,
                             mime="application/json",
                             use_container_width=True,
                             type="primary",
@@ -1190,10 +1201,13 @@ if batch_results and tab_editor:
                                 if txt:
                                     s2_out[a.article_number] = txt
                     out2 = _j2.dumps(s2_out, ensure_ascii=False, indent=4)
+                    s2_fname = st.session_state.original_filenames.get(
+                        law_id, {}
+                    ).get("s2", f"edited_s2_{law_id}.json")
                     st.download_button(
                         f"📥 حفظ ملف الجريدة الرسمية ({total_s2_edits} مادة معدّلة)",
                         data=out2.encode("utf-8"),
-                        file_name=f"edited_s2_{law_id}.json",
+                        file_name=s2_fname,
                         mime="application/json",
                         use_container_width=True,
                         type="primary",
